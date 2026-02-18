@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Just Start - Life Tracking Preview</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #050505; font-family: 'Pretendard', sans-serif; color: white; }
+        .glass-panel { background: #0f1115; border: 1px solid #1f2532; border-radius: 20px; }
+        .bar-track { background: #18181b; border-radius: 8px; border: 1px solid #27272a; overflow: hidden; }
+        .progress-bar { transition: width 1s cubic-bezier(0.4, 0, 0.2, 1); }
+    </style>
+</head>
+<body class="p-8 md:p-12 flex justify-center min-h-screen">
+    <div id="root" class="w-full max-w-4xl"></div>
+
+    <script type="text/babel">
+        const App = () => {
+            return (
+                <div className="animate-fade-in pb-20">
+                    <header className="mb-10">
+                        <div className="inline-block px-3 py-1 bg-zinc-900 border border-zinc-700 text-zinc-300 text-xs font-bold rounded-full mb-3">
+                            🌱 일상 / 행정 탭 전용 뷰
+                        </div>
+                        <h1 className="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500 mb-2">
+                            Life & Admin Tracker
+                        </h1>
+                        <p className="text-zinc-500 text-sm">P1~P4의 복잡한 10일 전략 대신, 단일 진행률과 '마감일 지연(Delay)' 상태를 직관적으로 추적합니다.</p>
+                    </header>
+
+                    <div className="space-y-6">
+                        
+                        {/* 🏢 프로젝트 1: 진행 중 & 지연 발생 (요양보호센터) */}
+                        <div className="glass-panel p-8 relative overflow-hidden">
+                            {/* 왼쪽 포인트 컬러 바 */}
+                            <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-yellow-500"></div>
+
+                            <div className="flex justify-between items-start mb-6">
+                                <div>
+                                    <h2 className="text-2xl font-black text-white flex items-center gap-2 mb-1">
+                                        요양보호센터 창업 준비
+                                    </h2>
+                                    <p className="text-xs text-zinc-500 font-mono">시작일: 2026-02-04</p>
+                                </div>
+                                <div className="text-right">
+                                    <span className="bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 text-[11px] font-black px-3 py-1.5 rounded-lg shadow-sm">
+                                        ⏳ 14일째 진행 중
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* 단일 진행률 바 (Progress Bar) */}
+                            <div className="mb-6">
+                                <div className="flex justify-between text-[10px] font-bold text-zinc-400 mb-2">
+                                    <span>전체 진도율</span>
+                                    <span className="text-yellow-400">40% (2/5 완료)</span>
+                                </div>
+                                <div className="w-full bar-track h-4 relative">
+                                    <div className="h-full bg-yellow-500 progress-bar shadow-[0_0_15px_rgba(234,179,8,0.4)]" style={{ width: '40%' }}></div>
+                                </div>
+                            </div>
+
+                            {/* 상세 할 일 리스트 (마감일 경고 포함) */}
+                            <div className="bg-[#08090a] border border-zinc-800 rounded-xl p-5 space-y-3">
+                                <div className="flex items-center gap-3 border-b border-zinc-800/50 pb-3">
+                                    <span className="text-sm">✅</span>
+                                    <span className="text-[10px] text-zinc-600 font-mono w-12 shrink-0">02/04</span>
+                                    <span className="text-sm text-zinc-500 line-through">시장 조사 및 상권 분석 완료</span>
+                                </div>
+                                <div className="flex items-center gap-3 border-b border-zinc-800/50 pb-3">
+                                    <span className="text-sm">✅</span>
+                                    <span className="text-[10px] text-zinc-600 font-mono w-12 shrink-0">02/07</span>
+                                    <span className="text-sm text-zinc-500 line-through">사회복지사 자격증 요건 확인</span>
+                                </div>
+                                {/* 🚨 마감일 지연 하이라이트 */}
+                                <div className="flex items-center gap-3 border-b border-red-900/30 pb-3 bg-red-950/10 -mx-5 px-5">
+                                    <span className="text-sm">🚨</span>
+                                    <span className="text-[10px] text-red-500 font-mono w-12 shrink-0">02/15</span>
+                                    <span className="text-sm text-red-100 font-bold flex-1">관할 구청 인허가 서류 문의하기</span>
+                                    <span className="bg-red-600 text-white text-[9px] font-bold px-2 py-1 rounded shadow-[0_0_10px_rgba(220,38,38,0.5)] animate-pulse">
+                                        마감 3일 지남!
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-3 pt-1">
+                                    <span className="text-sm opacity-50">☕</span>
+                                    <span className="text-[10px] text-zinc-600 font-mono w-12 shrink-0">대기</span>
+                                    <span className="text-sm text-zinc-400">사업계획서 초안 작성</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 💻 프로젝트 2: 완료됨 (사이드 프로젝트) */}
+                        <div className="glass-panel p-8 relative overflow-hidden opacity-80 hover:opacity-100 transition-opacity">
+                            <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-emerald-500"></div>
+                            
+                            <div className="flex justify-between items-start mb-6">
+                                <div>
+                                    <h2 className="text-2xl font-black text-white flex items-center gap-2 mb-1">
+                                        개인 생산성 웹앱 개발
+                                    </h2>
+                                    <p className="text-xs text-zinc-500 font-mono">시작일: 2026-02-10</p>
+                                </div>
+                                <div className="text-right">
+                                    <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[11px] font-black px-3 py-1.5 rounded-lg">
+                                        🎉 8일 만에 완료!
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div className="mb-6">
+                                <div className="flex justify-between text-[10px] font-bold text-zinc-400 mb-2">
+                                    <span>전체 진도율</span>
+                                    <span className="text-emerald-400">100% (2/2 완료)</span>
+                                </div>
+                                <div className="w-full bar-track h-4 relative">
+                                    <div className="h-full bg-emerald-500 progress-bar shadow-[0_0_15px_rgba(16,185,129,0.4)]" style={{ width: '100%' }}></div>
+                                </div>
+                            </div>
+
+                            <div className="bg-[#08090a] border border-zinc-800 rounded-xl p-5 space-y-3">
+                                <div className="flex items-center gap-3 border-b border-zinc-800/50 pb-3">
+                                    <span className="text-sm">✅</span>
+                                    <span className="text-[10px] text-zinc-600 font-mono w-12 shrink-0">02/10</span>
+                                    <span className="text-sm text-zinc-500 line-through">Supabase DB 스키마 설계 및 세팅</span>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <span className="text-sm">✅</span>
+                                    <span className="text-[10px] text-zinc-600 font-mono w-12 shrink-0">02/18</span>
+                                    <span className="text-sm text-zinc-500 line-through">React 대시보드 UI 연동 완료</span>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

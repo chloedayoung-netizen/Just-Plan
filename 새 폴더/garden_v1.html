@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Just Start - Korean Garden</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <style>
+        body { background-color: #0d1117; color: #c9d1d9; font-family: sans-serif; }
+        .garden-grid { display: grid; grid-template-columns: 200px repeat(auto-fill, minmax(65px, 1fr)); width: 100%; }
+        .cell { min-height: 80px; border: 0.1px solid #21262d; display: flex; align-items: center; justify-content: center; position: relative; }
+        .header-cell { background-color: #161b22; font-weight: bold; font-size: 11px; height: 50px; }
+        /* Style B 툴팁 */
+        .tooltip { visibility: hidden; position: absolute; bottom: 110%; left: 50%; transform: translateX(-50%); width: 220px; background: white; color: black; padding: 10px; border-radius: 12px; font-size: 11px; z-index: 50; box-shadow: 0 10px 25px rgba(0,0,0,0.5); opacity: 0; transition: 0.2s; }
+        .group:hover .tooltip { visibility: visible; opacity: 1; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        const SUPABASE_URL = "https://rcsicidesepmprytnyge.supabase.co";
+        const SUPABASE_KEY = "sb_publishable_m5OZH8qVZdBD8N_EBYU3mw_L2AhObjN";
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        const App = () => {
+            const [rawData, setRawData] = useState([]);
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                const fetchData = async () => {
+                    const { data, error } = await supabaseClient
+                        .from('tasks') // ⚠️ 테이블 이름 확인!
+                        .select('*');
+                    if (!error) setRawData(data || []);
+                    setLoading(false);
+                };
+                fetchData();
+            }, []);
+
+            // [한글 컬럼 매칭] 대카테고리 > 중카테고리로 그룹화
+            const categories = useMemo(() => {
+                const map = {};
+                rawData.forEach(d => {
+                    const big = d["대카테고리"] || "미분류";
+                    const mid = d["중카테고리"] || "일반";
+                    const key = `${big} > ${mid}`;
+                    if (!map[key]) map[key] = { big, mid };
+                });
+                return Object.values(map);
+            }, [rawData]);
+
+            const dates = useMemo(() => {
+                const start = new Date("2026-02-04");
+                const end = new Date();
+                const arr = [];
+                for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                    arr.push(d.toISOString().split('T')[0]);
+                }
+                return arr;
+            }, []);
+
+            const getIcon = (count) => {
+                if (count >= 5) return "🌳";
+                if (count >= 3) return "🌿";
+                if (count >= 1) return "🌱";
+                return "";
+            };
+
+            if (loading) return <div className="p-20 text-center text-green-500">정원 로딩 중...</div>;
+
+            return (
+                <div className="p-10">
+                    <h1 className="text-2xl font-bold mb-8 text-green-400 font-black">MY STRATEGY GARDEN</h1>
+                    
+                    <div className="overflow-x-auto rounded-xl border border-gray-800 bg-[#0d1117]">
+                        <div className="min-w-max">
+                            {/* 헤더 행 */}
+                            <div className="garden-grid border-b border-gray-800">
+                                <div className="cell header-cell">CATEGORY</div>
+                                {dates.map(date => (
+                                    <div key={date} className="cell header-cell flex flex-col">
+                                        <span className="text-gray-400">{date.split('-')[2]}일</span>
+                                        <span className="text-[9px] font-normal uppercase">{new Date(date).toLocaleDateString('ko-KR', {weekday: 'short'})}</span>
+                                    </div>
+                                ))}
+                            </div>
+
+                            {/* 카테고리 행 */}
+                            {categories.map(cat => (
+                                <div key={`${cat.big}-${cat.mid}`} className="garden-grid border-b border-gray-900 group/row">
+                                    <div className="cell justify-start px-4 border-r border-gray-800">
+                                        <div className="text-[9px] text-gray-600 uppercase mb-1">{cat.big}</div>
+                                        <div className="text-xs font-bold text-gray-300">{cat.mid}</div>
+                                    </div>
+                                    {dates.map(date => {
+                                        // [한글 매칭 핵심] 날짜, 대카테고리, 중카테고리 모두 일치하는 데이터 찾기
+                                        const tasks = rawData.filter(d => 
+                                            d["날짜"] === date && 
+                                            d["대카테고리"] === cat.big && 
+                                            d["중카테고리"] === cat.mid
+                                        );
+                                        return (
+                                            <div key={date} className="cell group transition-all hover:bg-green-500/5">
+                                                <span className="text-2xl">{getIcon(tasks.length)}</span>
+                                                {tasks.length > 0 && (
+                                                    <div className="tooltip">
+                                                        <div className="font-bold border-b mb-2 pb-1 text-green-600">{cat.mid} ({date})</div>
+                                                        <ul className="space-y-1">
+                                                            {tasks.map((t, i) => <li key={i}>• {t["내용"]}</li>)}
+                                                        </ul>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

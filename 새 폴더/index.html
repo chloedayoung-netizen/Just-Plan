@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Just Start - Supabase Garden</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <style>
+        body { background-color: #0d1117; color: #c9d1d9; font-family: sans-serif; }
+        /* 그리드 레이아웃: 카테고리 고정 + 날짜별 유연한 너비 */
+        .grid-row { display: grid; grid-template-columns: 120px 150px repeat(auto-fill, minmax(200px, 1fr)); min-width: 100%; }
+        .cell { border: 0.5px solid #30363d; padding: 12px; min-height: 80px; }
+        .header-cell { background-color: #161b22; font-weight: bold; position: sticky; top: 0; z-index: 10; }
+        .empty-cell { background-color: transparent; } /* 공백은 빈 걸로 처리 */
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // 1. 슈파베이스 설정 (여기에 정보를 입력하세요)
+        const SUPABASE_URL = "https://rcsicidesepmprytnyge.supabase.co";
+        const SUPABASE_KEY = "sb_publishable_m5OZH8qVZdBD8N_EBYU3mw_L2AhObjN";
+        const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        const App = () => {
+            const [rawData, setRawData] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [showAllDays, setShowAllDays] = useState(true);
+
+            // 2. 슈파베이스 데이터 불러오기
+            useEffect(() => {
+                const fetchData = async () => {
+                    setLoading(true);
+                    const { data, error } = await supabase
+                        .from('analysis_history') // 테이블명이 다르면 수정하세요
+                        .select('*')
+                        .order('entry_date', { ascending: true });
+
+                    if (error) console.error("Error fetching:", error);
+                    else setRawData(data || []);
+                    setLoading(false);
+                };
+                fetchData();
+            }, []);
+
+            // 3. 날짜 리스트 생성 (2/4부터 현재까지)
+            const dates = useMemo(() => {
+                if (rawData.length === 0) return [];
+                const start = new Date("2026-02-04");
+                const end = new Date(); // 오늘까지
+                const arr = [];
+                for (let dt = new Date(start); dt <= end; dt.setDate(dt.getDate() + 1)) {
+                    const dateStr = dt.toISOString().split('T')[0];
+                    if (showAllDays || rawData.some(d => d.entry_date === dateStr)) {
+                        arr.push(dateStr);
+                    }
+                }
+                return arr;
+            }, [rawData, showAllDays]);
+
+            // 4. 카테고리 위계 정리
+            const categories = useMemo(() => {
+                const groups = {};
+                rawData.forEach(item => {
+                    const big = item.category_big || "Uncategorized";
+                    const mid = item.category_mid || "General";
+                    if (!groups[big]) groups[big] = new Set();
+                    groups[big].add(mid);
+                });
+                return groups;
+            }, [rawData]);
+
+            // 5. 성장 아이콘 계산기
+            const getIcon = (count) => {
+                if (count >= 5) return "🌳";
+                if (count >= 3) return "🌿";
+                if (count >= 1) return "🌱";
+                return "";
+            };
+
+            if (loading) return <div className="p-20 text-center">정원에 물 주는 중... (로딩 중)</div>;
+
+            return (
+                <div className="p-4 md:p-10">
+                    <header className="flex justify-between items-center mb-8">
+                        <div>
+                            <h1 className="text-3xl font-bold text-green-400">Live Growth Garden</h1>
+                            <p className="text-gray-400">슈파베이스 실시간 연동 대시보드</p>
+                        </div>
+                        <button 
+                            onClick={() => setShowAllDays(!showAllDays)}
+                            className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-full font-bold transition"
+                        >
+                            {showAllDays ? "🚀 일한 날만 보기" : "📅 모든 날짜 보기"}
+                        </button>
+                    </header>
+
+                    <div className="overflow-auto border border-gray-800 rounded-2xl shadow-2xl bg-[#0d1117]">
+                        <div className="min-w-max">
+                            {/* 헤더 행 */}
+                            <div className="grid-row border-b border-gray-700">
+                                <div className="cell header-cell">대분류</div>
+                                <div className="cell header-cell">중분류</div>
+                                {dates.map(d => (
+                                    <div key={d} className="cell header-cell text-center">
+                                        {d.split('-')[1]}/{d.split('-')[2]}
+                                        <div className="text-[10px] text-gray-500 font-normal">
+                                            {new Date(d).toLocaleDateString('ko-KR', {weekday: 'short'})}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            {/* 데이터 행 */}
+                            {Object.keys(categories).map(big => (
+                                Array.from(categories[big]).map(mid => (
+                                    <div key={`${big}-${mid}`} className="grid-row hover:bg-gray-800/20 transition">
+                                        <div className="cell text-xs font-bold text-gray-500 border-r border-gray-800 flex items-center">{big}</div>
+                                        <div className="cell text-xs text-gray-300 border-r border-gray-800 flex items-center">{mid}</div>
+                                        {dates.map(date => {
+                                            const dayTasks = rawData.filter(d => d.entry_date === date && d.category_big === big && d.category_mid === mid);
+                                            return (
+                                                <div key={date} className="cell flex flex-col gap-2 overflow-hidden">
+                                                    {dayTasks.length > 0 && (
+                                                        <>
+                                                            <div className="text-xl">{getIcon(dayTasks.length)}</div>
+                                                            <ul className="text-[10px] text-gray-400 list-disc pl-3">
+                                                                {dayTasks.map((t, idx) => (
+                                                                    <li key={idx} className="truncate" title={t.content}>
+                                                                        {t.is_done === 'O' ? '✅ ' : ''}{t.content}
+                                                                    </li>
+                                                                ))}
+                                                            </ul>
+                                                        </>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ))
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

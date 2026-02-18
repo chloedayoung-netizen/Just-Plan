@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Just Start - Two-Track Dashboard</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #000; font-family: 'Pretendard', sans-serif; color: white; }
+        .glass-panel { background: rgba(15, 15, 15, 0.9); border: 1px solid #27272a; border-radius: 24px; }
+        .bar-track { background: #18181b; border-radius: 8px; border: 1px solid #27272a; }
+        .tab-active { background: #fff; color: #000; box-shadow: 0 0 15px rgba(255,255,255,0.2); }
+        .tab-inactive { background: #18181b; color: #71717a; border: 1px solid #27272a; }
+        .progress-bar { transition: width 1s cubic-bezier(0.4, 0, 0.2, 1); }
+        ::-webkit-scrollbar { display: none; }
+        /* 칸반 보드용 스타일 */
+        .kanban-col { background: #0a0a0c; border: 1px solid #27272a; border-radius: 20px; }
+        .task-card { background: #18181b; border: 1px solid #27272a; border-radius: 12px; transition: transform 0.2s; }
+        .task-card:hover { transform: translateY(-2px); border-color: #3f3f46; }
+    </style>
+</head>
+<body class="p-8 flex justify-center min-h-screen">
+    <div id="root" class="w-full max-w-6xl"></div>
+
+    <script type="text/babel">
+        const { useState } = React;
+
+        // [프리뷰용 가짜 데이터]
+        const MOCK_DATA = {
+            "🎯 구직 / 전략": [
+                {
+                    name: "세일즈포스", startDate: "2026-02-04", currentDay: 5,
+                    phases: {
+                        P1: { percent: 100 }, P2: { percent: 50 }, P3: { percent: 0 }, P4: { percent: 0 }
+                    }
+                }
+            ],
+            "🌱 일상 / 루틴": {
+                // 일상 탭은 P1~P4가 아닌, 칸반(Kanban) 형태의 데이터를 가집니다.
+                admin: [
+                    { id: 1, title: "은행 관련 서류 팩스 발송", time: "예상 30분", isUrgent: true },
+                    { id: 2, title: "통신사 요금제 변경 문의", time: "예상 15분", isUrgent: false }
+                ],
+                routines: [
+                    { id: 3, title: "아침 영양제 챙겨 먹기", status: "done" },
+                    { id: 4, title: "가벼운 동네 산책 20분", status: "pending" }
+                ],
+                brainDump: [
+                    { id: 5, title: "나중에 시간 나면 노션 템플릿 정리하기", date: "02/16" },
+                    { id: 6, title: "갑자기 생각난 블로그 글감: 실패 회고록", date: "02/18" }
+                ]
+            }
+        };
+
+        const App = () => {
+            const [activeTab, setActiveTab] = useState("🎯 구직 / 전략");
+
+            // 1. 전략 맵 뷰 (기존 P1~P4)
+            const renderStrategyView = () => (
+                <div className="space-y-8 animate-fade-in">
+                    {MOCK_DATA["🎯 구직 / 전략"].map((proj, idx) => (
+                        <div key={idx} className="glass-panel p-8 relative shadow-2xl">
+                            <div className="flex justify-between items-center mb-6 border-b border-zinc-800/50 pb-4">
+                                <h2 className="text-xl font-black text-white flex items-center gap-3">
+                                    <span className="w-3 h-3 rounded-full bg-green-500"></span> {proj.name}
+                                </h2>
+                                <span className="bg-yellow-400 text-black text-[11px] font-black px-3 py-1 rounded-md">DAY {proj.currentDay}</span>
+                            </div>
+                            {/* P1 ~ P4 게이지 바 (축약형) */}
+                            <div className="space-y-4">
+                                <div className="flex items-center"><span className="w-16 text-[10px] text-zinc-400">P1 분석</span><div className="w-full bar-track h-6"><div className="h-full bg-green-500 rounded" style={{width: '100%'}}></div></div></div>
+                                <div className="flex items-center"><span className="w-16 text-[10px] text-zinc-400">P2 문서</span><div className="w-full bar-track h-6"><div className="h-full bg-blue-500 rounded" style={{width: '50%'}}></div></div></div>
+                                <div className="flex items-center"><span className="w-16 text-[10px] text-zinc-400">P3 훈련</span><div className="w-full bar-track h-6"><div className="h-full bg-orange-500 rounded" style={{width: '0%'}}></div></div></div>
+                                <div className="flex items-center"><span className="w-16 text-[10px] text-zinc-400">P4 제출</span><div className="w-full bar-track h-6"><div className="h-full bg-red-500 rounded" style={{width: '0%'}}></div></div></div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            );
+
+            // 2. 일상/루틴 뷰 (신규 칸반 보드)
+            const renderLifeGardenView = () => {
+                const data = MOCK_DATA["🌱 일상 / 루틴"];
+                return (
+                    <div className="grid grid-cols-3 gap-6 animate-fade-in">
+                        
+                        {/* Column 1: 행정/단기 과업 */}
+                        <div className="kanban-col p-5">
+                            <div className="flex items-center justify-between mb-4 border-b border-zinc-800 pb-2">
+                                <h3 className="font-bold text-zinc-200 flex items-center gap-2"><span className="text-red-400">🔥</span> 행정 / 과업</h3>
+                                <span className="text-[10px] bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded-full">{data.admin.length}</span>
+                            </div>
+                            <div className="space-y-3">
+                                {data.admin.map(task => (
+                                    <div key={task.id} className="task-card p-4 cursor-pointer">
+                                        {task.isUrgent && <span className="inline-block px-1.5 py-0.5 bg-red-900/40 text-red-400 text-[9px] rounded font-bold mb-2">긴급</span>}
+                                        <p className="text-sm text-zinc-200 leading-snug">{task.title}</p>
+                                        <div className="mt-3 flex justify-between items-center text-[10px] text-zinc-500">
+                                            <span className="font-mono bg-zinc-900 px-1.5 py-0.5 rounded">{task.time}</span>
+                                            <button className="hover:text-green-400">완료하기 ✅</button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Column 2: 데일리 루틴 */}
+                        <div className="kanban-col p-5">
+                            <div className="flex items-center justify-between mb-4 border-b border-zinc-800 pb-2">
+                                <h3 className="font-bold text-zinc-200 flex items-center gap-2"><span className="text-green-400">🌿</span> 데일리 루틴</h3>
+                            </div>
+                            <div className="space-y-3">
+                                {data.routines.map(task => (
+                                    <div key={task.id} className="task-card p-4 flex justify-between items-center cursor-pointer">
+                                        <span className={`text-sm ${task.status === 'done' ? 'text-zinc-500 line-through' : 'text-zinc-200'}`}>{task.title}</span>
+                                        <span className="text-xl">{task.status === 'done' ? '✅' : '🔲'}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Column 3: 브레인 덤프 (미분류 메모) */}
+                        <div className="kanban-col p-5 opacity-80">
+                            <div className="flex items-center justify-between mb-4 border-b border-zinc-800 pb-2">
+                                <h3 className="font-bold text-zinc-400 flex items-center gap-2"><span className="text-zinc-500">📥</span> 브레인 덤프</h3>
+                            </div>
+                            <p className="text-[10px] text-zinc-500 mb-4 leading-relaxed">아직 분류되지 않은 아이디어나 메모들이 머무는 대기실입니다.</p>
+                            <div className="space-y-3">
+                                {data.brainDump.map(task => (
+                                    <div key={task.id} className="task-card p-4 border-dashed border-zinc-700">
+                                        <p className="text-xs text-zinc-400 leading-snug">{task.title}</p>
+                                        <p className="text-[9px] text-zinc-600 mt-2 text-right">{task.date}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                    </div>
+                );
+            };
+
+            return (
+                <div className="pb-20 w-full">
+                    {/* 최상단 탭 */}
+                    <div className="flex gap-4 mb-8 overflow-x-auto pb-2">
+                        {["🎯 구직 / 전략", "🌱 일상 / 루틴"].map(tab => (
+                            <button key={tab} onClick={() => setActiveTab(tab)} 
+                                className={`px-8 py-3 rounded-full font-black text-sm transition-all flex-shrink-0 ${activeTab === tab ? 'tab-active' : 'tab-inactive hover:bg-zinc-800'}`}>
+                                {tab}
+                            </button>
+                        ))}
+                    </div>
+
+                    <header className="mb-12 border-b border-zinc-800 pb-6">
+                        <h1 className="text-4xl font-extrabold text-white mb-2 tracking-tight">
+                            {activeTab.includes("전략") ? "Strategy Dashboard" : "Life & Admin Garden"}
+                        </h1>
+                        <p className="text-zinc-500 text-sm">
+                            {activeTab.includes("전략") 
+                                ? "목표를 향한 10일간의 전략 진척도를 확인하세요." 
+                                : "복잡한 생각은 비우고, 오늘 해내야 할 일상에만 집중하세요."}
+                        </p>
+                    </header>
+
+                    {/* 조건부 렌더링: 탭에 따라 다른 뷰를 보여줌 */}
+                    {activeTab === "🎯 구직 / 전략" ? renderStrategyView() : renderLifeGardenView()}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

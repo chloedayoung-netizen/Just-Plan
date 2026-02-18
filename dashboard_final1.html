@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Just Start - Interactive Dashboard</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <style>
+        body { background-color: #000; font-family: 'Pretendard', sans-serif; color: white; }
+        .glass-panel { background: rgba(15, 15, 15, 0.9); border: 1px solid #27272a; border-radius: 24px; }
+        .bar-track { background: #18181b; border-radius: 8px; border: 1px solid #27272a; }
+        .tab-active { background: #fff; color: #000; box-shadow: 0 0 15px rgba(255,255,255,0.2); }
+        .tab-inactive { background: #18181b; color: #71717a; border: 1px solid #27272a; }
+        .progress-bar { transition: width 1s cubic-bezier(0.4, 0, 0.2, 1); }
+        /* 스크롤바 숨기기 (웹킷 기반) */
+        ::-webkit-scrollbar { display: none; }
+    </style>
+</head>
+<body class="p-8 flex justify-center min-h-screen">
+    <div id="root" class="w-full max-w-6xl"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // ⚠️ 사용자님의 Supabase URL과 KEY로 꼭 변경하세요!
+        const SUPABASE_URL = "https://rcsicidesepmprytnyge.supabase.co";
+        const SUPABASE_KEY = "sb_publishable_m5OZH8qVZdBD8N_EBYU3mw_L2AhObjN";
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        // 1. 유틸리티 함수 모음
+        const getFormatDate = (startDateStr, dayOffset) => {
+            if (!startDateStr) return "-";
+            const date = new Date(startDateStr);
+            date.setDate(date.getDate() + dayOffset);
+            return `${date.getMonth() + 1}/${date.getDate()}`;
+        };
+
+        const calcActualMinutes = (start, end) => {
+            if (!start || !end) return null;
+            const [sH, sM] = start.split(':').map(Number);
+            const [eH, eM] = end.split(':').map(Number);
+            if (isNaN(sH) || isNaN(eH)) return null;
+            let diff = (eH * 60 + eM) - (sH * 60 + sM);
+            return diff >= 0 ? diff : diff + 1440; // 자정 넘기는 경우 처리
+        };
+
+        const App = () => {
+            const [rawData, setRawData] = useState([]);
+            const [activeTab, setActiveTab] = useState("");
+            const [loading, setLoading] = useState(true);
+            const [expanded, setExpanded] = useState({}); // 열려있는 아코디언 추적
+
+            // 아코디언 열기/닫기 토글 함수
+            const toggleExpand = (projName, pTag) => {
+                const key = `${projName}-${pTag}`;
+                setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
+            };
+
+            // 2. 슈파베이스 데이터 실시간 호출 (새로운 컬럼 추가)
+            useEffect(() => {
+                const fetchData = async () => {
+                    const { data, error } = await supabaseClient
+                        .from('tasks') 
+                        // 예상시간, 시작/종료시간 등 다이어트할 데이터까지 모두 가져옵니다.
+                        .select('날짜, 대카테고리, 중카테고리, 내용, 완료여부, milestone, 예상시간, 시작시간, 종료시간');
+                    
+                    if (error) console.error("Error fetching data:", error);
+                    else setRawData(data || []);
+                    setLoading(false);
+                };
+                fetchData();
+            }, []);
+
+            // 3. 데이터 컨버터 (가공 로직)
+            const processedData = useMemo(() => {
+                if (rawData.length === 0) return {};
+                const groups = {};
+
+                rawData.forEach(row => {
+                    const big = row["대카테고리"] || "미분류";
+                    const mid = row["중카테고리"] || "기타";
+                    
+                    if (!groups[big]) groups[big] = {};
+                    if (!groups[big][mid]) groups[big][mid] = { name: mid, tasks: [], earliestDate: null };
+                    groups[big][mid].tasks.push(row);
+
+                    const rowDate = new Date(row["날짜"]);
+                    if (!isNaN(rowDate)) {
+                        if (!groups[big][mid].earliestDate || rowDate < groups[big][mid].earliestDate) {
+                            groups[big][mid].earliestDate = rowDate;
+                        }
+                    }
+                });
+
+                const result = {};
+                for (const big in groups) {
+                    result[big] = Object.values(groups[big]).map(proj => {
+                        const start = proj.earliestDate || new Date();
+                        const startDateStr = start.toISOString().split('T')[0];
+                        const diffTime = Math.abs(new Date() - start);
+                        const currentDay = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1;
+
+                        const getPhaseData = (pTag) => {
+                            const pTasks = proj.tasks.filter(t => t.milestone === pTag).sort((a,b) => new Date(a["날짜"]) - new Date(b["날짜"]));
+                            const total = pTasks.length;
+                            const done = pTasks.filter(t => t["완료여부"] === 'O' || t["완료여부"] === 'o').length;
+                            return { total, done, percent: total === 0 ? 0 : Math.round((done/total)*100), tasks: pTasks };
+                        };
+
+                        return {
+                            name: proj.name, startDate: startDateStr, currentDay,
+                            phases: {
+                                P1: { label: "전략분석", color: "green", ...getPhaseData('P1') },
+                                P2: { label: "문서저격", color: "blue", ...getPhaseData('P2') },
+                                P3: { label: "실전훈련", color: "orange", ...getPhaseData('P3') },
+                                P4: { label: "최종제출", color: "red", ...getPhaseData('P4') }
+                            }
+                        };
+                    });
+                }
+                return result;
+            }, [rawData]);
+
+            useEffect(() => {
+                const categories = Object.keys(processedData);
+                if (categories.length > 0 && !activeTab) setActiveTab(categories[0]);
+            }, [processedData, activeTab]);
+
+            if (loading) return <div className="mt-40 text-center text-zinc-500 animate-pulse">본부와 통신 중...</div>;
+            if (Object.keys(processedData).length === 0) return <div className="mt-40 text-center text-zinc-500">데이터가 없습니다.</div>;
+
+            const projects = processedData[activeTab] || [];
+
+            return (
+                <div className="pb-20 w-full animate-fade-in">
+                    {/* 최상단 탭 */}
+                    <div className="flex gap-4 mb-8 overflow-x-auto pb-2">
+                        {Object.keys(processedData).map(tab => (
+                            <button key={tab} onClick={() => setActiveTab(tab)} 
+                                className={`px-8 py-3 rounded-full font-black text-sm transition-all flex-shrink-0 ${activeTab === tab ? 'tab-active' : 'tab-inactive hover:bg-zinc-800'}`}>
+                                {tab}
+                            </button>
+                        ))}
+                    </div>
+
+                    <header className="mb-12 border-b border-zinc-800 pb-6">
+                        <h1 className="text-4xl font-extrabold text-white mb-2 tracking-tight">Strategy Dashboard</h1>
+                        <p className="text-zinc-500 text-sm">진행 막대(Bar)를 클릭하면 상세 내역과 시간(Time Tracking)을 볼 수 있습니다.</p>
+                    </header>
+
+                    {/* 프로젝트 리스트 */}
+                    <div className="space-y-8">
+                        {projects.map((proj, idx) => (
+                            <div key={idx} className="glass-panel p-8 relative shadow-2xl">
+                                
+                                <div className="flex justify-between items-center mb-6 border-b border-zinc-800/50 pb-4">
+                                    <h2 className="text-xl font-black text-white flex items-center gap-3">
+                                        <span className="w-3 h-3 rounded-full bg-green-500"></span> {proj.name}
+                                    </h2>
+                                    <div className="text-right">
+                                        <span className="bg-yellow-400 text-black text-[11px] font-black px-3 py-1 rounded-md">DAY {proj.currentDay}</span>
+                                    </div>
+                                </div>
+
+                                {/* P1 ~ P4 동적 렌더링 & 아코디언 */}
+                                <div className="space-y-4 relative z-10">
+                                    {Object.entries(proj.phases).map(([pTag, pData]) => {
+                                        const isExpanded = expanded[`${proj.name}-${pTag}`];
+                                        const hasTasks = pData.total > 0;
+
+                                        return (
+                                            <div key={pTag} className="flex flex-col">
+                                                {/* 막대 그래프 행 (클릭 가능) */}
+                                                <div 
+                                                    className={`flex items-center group transition-colors rounded-xl py-1 ${hasTasks ? 'cursor-pointer hover:bg-zinc-800/30' : 'opacity-50 cursor-not-allowed'}`}
+                                                    onClick={() => hasTasks && toggleExpand(proj.name, pTag)}
+                                                >
+                                                    <div className="w-[15%] text-[10px] text-zinc-400 font-bold flex items-center gap-2 pl-2">
+                                                        <span className={`bg-${pData.color}-900/30 text-${pData.color}-500 px-1.5 py-0.5 rounded`}>{pTag}</span> {pData.label}
+                                                    </div>
+                                                    <div className="w-[75%] bar-track h-8 relative">
+                                                        <div className={`absolute left-[${pTag === 'P1' ? '0' : pTag === 'P2' ? '20' : pTag === 'P3' ? '50' : '80'}%] w-[${pTag === 'P1' ? '20' : pTag === 'P2' ? '30' : pTag === 'P3' ? '30' : '20'}%] h-full bg-${pData.color}-500/10 rounded overflow-hidden`}>
+                                                            <div className={`h-full bg-${pData.color}-500 progress-bar relative shadow-[0_0_10px_rgba(var(--tw-colors-${pData.color}-500),0.3)]`} style={{ width: `${pData.percent}%` }}></div>
+                                                        </div>
+                                                    </div>
+                                                    <div className="w-[10%] text-right pr-2">
+                                                        {hasTasks && (
+                                                            <span className="text-[10px] font-bold text-zinc-500 bg-zinc-900 px-2 py-1 rounded-md">
+                                                                {isExpanded ? '▲ 접기' : `▼ ${pData.total}개`}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                {/* 확장된 리스트 (Accordion Content) */}
+                                                {isExpanded && hasTasks && (
+                                                    <div className="ml-[15%] mt-2 mr-[10%] bg-[#0a0a0c] border border-zinc-800/80 rounded-xl p-4 space-y-3 shadow-inner transition-all animate-fade-in">
+                                                        {pData.tasks.map((task, tIdx) => {
+                                                            const isDone = task["완료여부"] === 'O' || task["완료여부"] === 'o';
+                                                            const actualMins = calcActualMinutes(task["시작시간"], task["종료시간"]);
+                                                            const expectedMins = task["예상시간"] ? parseInt(task["예상시간"].replace(/[^0-9]/g, "")) : null;
+                                                            
+                                                            // 시간 오버 여부 시각화
+                                                            let timeDisplay = <span className="text-zinc-500">시간 기록 없음</span>;
+                                                            if (actualMins !== null) {
+                                                                const isOverTime = expectedMins && actualMins > expectedMins;
+                                                                timeDisplay = (
+                                                                    <span className="flex items-center gap-1.5 font-mono text-[10px]">
+                                                                        <span className="text-zinc-500 bg-zinc-800/50 px-1.5 py-0.5 rounded">예상 {task["예상시간"] || '-'}</span>
+                                                                        <span className="text-zinc-600">/</span>
+                                                                        <span className={`px-1.5 py-0.5 rounded font-bold ${isOverTime ? 'bg-red-900/30 text-red-400' : 'bg-green-900/30 text-green-400'}`}>
+                                                                            실제 {actualMins}분
+                                                                        </span>
+                                                                    </span>
+                                                                );
+                                                            }
+
+                                                            return (
+                                                                <div key={tIdx} className="flex justify-between items-center border-b border-zinc-800/30 pb-3 last:border-0 last:pb-0">
+                                                                    <div className="flex items-center gap-3 w-2/3">
+                                                                        <span className="text-sm">{isDone ? '✅' : '🏃'}</span>
+                                                                        <span className="text-[10px] text-zinc-500 font-mono w-10 shrink-0">{task["날짜"] ? task["날짜"].substring(5).replace('-','/') : ''}</span>
+                                                                        <span className={`text-xs truncate ${isDone ? 'text-zinc-500 line-through' : 'text-zinc-200'}`}>
+                                                                            {task["내용"]}
+                                                                        </span>
+                                                                    </div>
+                                                                    <div className="w-1/3 flex justify-end">
+                                                                        {timeDisplay}
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
