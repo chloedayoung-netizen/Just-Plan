@@ -1,0 +1,2043 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Just Start - Today Focus</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <style>
+        body { background-color: #050505; font-family: 'Pretendard', sans-serif; color: white; }
+        .glass-panel { background: #0f1115; border: 1px solid #1f2532; border-radius: 20px; transition: all 0.3s ease; }
+        .bar-track { background: #18181b; border-radius: 6px; border: 1px solid #27272a; overflow: hidden;}
+        .tab-active { background: #fff; color: #000; box-shadow: 0 0 15px rgba(255,255,255,0.2); }
+        .tab-inactive { background: #18181b; color: #71717a; border: 1px solid #27272a; }
+        .progress-bar { transition: width 1s cubic-bezier(0.4, 0, 0.2, 1); }
+        ::-webkit-scrollbar { display: none; }
+        .pulse-dot { animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { opacity: 0.4; } 50% { opacity: 1; } 100% { opacity: 0.4; } }
+        .view-btn-active { background: #27272a; color: white; border-color: #3f3f46; }
+        .expand-anim { animation: slideDown 0.3s ease-out forwards; }
+        @keyframes slideDown { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+        .fab-gradient { background: linear-gradient(135deg, #3b82f6 0%, #10b981 100%); }
+        .modal-overlay { background: rgba(0, 0, 0, 0.85); backdrop-filter: blur(8px); }
+        .focus-card { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+        .focus-card:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,0,0,0.4); }
+    </style>
+</head>
+<body class="p-6 md:p-10 flex justify-center min-h-screen">
+    <div id="root" class="w-full max-w-7xl"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        const SUPABASE_URL = "https://rcsicidesepmprytnyge.supabase.co";
+        const SUPABASE_KEY = "sb_publishable_m5OZH8qVZdBD8N_EBYU3mw_L2AhObjN";
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        const getFormatDate = (dateStr) => {
+            if (!dateStr) return "-";
+            const date = new Date(dateStr);
+            return isNaN(date) ? dateStr : `${String(date.getMonth() + 1).padStart(2,'0')}/${String(date.getDate()).padStart(2,'0')}`;
+        };
+
+        const calcActualMinutes = (start, end) => {
+            if (!start || !end) return null;
+            const [sH, sM] = start.split(':').map(Number);
+            const [eH, eM] = end.split(':').map(Number);
+            if (isNaN(sH) || isNaN(eH)) return null;
+            let diff = (eH * 60 + eM) - (sH * 60 + sM);
+            return diff >= 0 ? diff : diff + 1440;
+        };
+
+        const safeDate = (value) => {
+            const d = new Date(value);
+            return isNaN(d) ? null : d;
+        };
+
+        const toDateOnly = (value) => {
+            const d = safeDate(value);
+            if (!d) return null;
+            return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        };
+
+        const toHHMM = (date) => `${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
+        const parseHHMMToMinutes = (value) => {
+            if (!value || !value.includes(':')) return null;
+            const [h, m] = value.split(':').map(Number);
+            if (Number.isNaN(h) || Number.isNaN(m)) return null;
+            return h * 60 + m;
+        };
+        const calcDurationFromHHMM = (start, end) => {
+            const s = parseHHMMToMinutes(start);
+            const e = parseHHMMToMinutes(end);
+            if (s === null || e === null) return null;
+            const diff = e >= s ? e - s : (e + 1440) - s;
+            return diff;
+        };
+
+        const getCoachingMessage = (day) => {
+            if (day <= 2) return "초반 48시간이 가장 중요합니다. 완벽주의 대신 착수 속도에 집중하세요.";
+            if (day <= 5) return "중반 구간입니다. 딜레이가 생긴 작업은 가장 작은 단위로 다시 쪼개어 재가동하세요.";
+            if (day <= 8) return "후반 가속 구간입니다. 미완료 항목을 우선순위 기준으로 정렬해 빠르게 정리하세요.";
+            return "마무리 단계입니다. 새 작업 추가를 멈추고 제출/완료 가능한 항목에만 집중하세요.";
+        };
+
+        const App = () => {
+            const [rawData, setRawData] = useState([]);
+            const [activeTab, setActiveTab] = useState("");
+            const [viewMode, setViewMode] = useState("focus");
+            const [loading, setLoading] = useState(true);
+
+            // AI Modal States
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [aiGoal, setAiGoal] = useState("");
+            const [apiKey, setApiKey] = useState(localStorage.getItem("gemini_api_key") || "");
+            const [isGenerating, setIsGenerating] = useState(false);
+            const MODEL_CANDIDATES = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash'];
+            const CUSTOM_OPTION = "__custom__";
+            const [majorCategorySelect, setMajorCategorySelect] = useState("");
+            const [majorCategoryCustom, setMajorCategoryCustom] = useState("");
+            const [minorCategorySelect, setMinorCategorySelect] = useState("");
+            const [minorCategoryCustom, setMinorCategoryCustom] = useState("");
+
+            const [expandedTaskDetails, setExpandedTaskDetails] = useState({});
+            const [splittingTaskId, setSplittingTaskId] = useState(null);
+            const [playingTaskId, setPlayingTaskId] = useState(null);
+            const [showDelayedOnly, setShowDelayedOnly] = useState(false);
+            const [projectActions, setProjectActions] = useState({});
+            const [projectForms, setProjectForms] = useState({});
+            const [quickTargetProject, setQuickTargetProject] = useState("");
+            const [quickMode, setQuickMode] = useState("single");
+            const [quickContent, setQuickContent] = useState("");
+            const [quickMilestone, setQuickMilestone] = useState("P1");
+            const [quickExpected, setQuickExpected] = useState("20분");
+            const [quickDate, setQuickDate] = useState(new Date().toISOString().split('T')[0]);
+            const [quickDueDate, setQuickDueDate] = useState(new Date().toISOString().split('T')[0]);
+            const [quickSaving, setQuickSaving] = useState(false);
+            const [topGanttMode, setTopGanttMode] = useState("minor");
+            const [highlightedProject, setHighlightedProject] = useState("");
+            const [selectedTaskByProject, setSelectedTaskByProject] = useState({});
+            const projectCardRefs = useRef({});
+            const highlightTimerRef = useRef(null);
+            const [projectChartModes, setProjectChartModes] = useState(() => {
+                try {
+                    return JSON.parse(localStorage.getItem("project_chart_modes") || "{}");
+                } catch {
+                    return {};
+                }
+            });
+
+            const [brainState, setBrainState] = useState(() =>
+                localStorage.getItem("brain_state_today") || "");
+            const [focusIndex, setFocusIndex] = useState(0);
+            const [dailyXP, setDailyXP] = useState(() => {
+                try {
+                    const s = JSON.parse(localStorage.getItem("daily_xp") || "{}");
+                    return s.date === new Date().toDateString() ? s.xp : 0;
+                } catch { return 0; }
+            });
+            const [streak, setStreak] = useState(0);
+            const [showCelebration, setShowCelebration] = useState(false);
+            const [elapsedSec, setElapsedSec] = useState(0);
+            const canvasRef = useRef(null);
+            const [showWelcomeBack, setShowWelcomeBack] = useState(false);
+            const [daysSinceLastVisit, setDaysSinceLastVisit] = useState(0);
+
+            const toggleTaskDetail = (taskId) => setExpandedTaskDetails(prev => ({ ...prev, [taskId]: !prev[taskId] }));
+            const getProjectKey = (projName) => `${activeTab}::${projName}`;
+            const focusProjectCard = (projName) => {
+                const el = projectCardRefs.current[projName];
+                if (!el) return;
+                el.scrollIntoView({ behavior: "smooth", block: "start" });
+                setHighlightedProject(projName);
+                const targetProject = currentProjectList.find(p => p.name === projName);
+                const priorityTaskId =
+                    targetProject?.allTasks?.find(t => t.isDelayed)?.["ID"] ||
+                    targetProject?.allTasks?.[0]?.["ID"];
+                if (priorityTaskId) {
+                    const pKey = getProjectKey(projName);
+                    setSelectedTaskByProject(prev => ({ ...prev, [pKey]: priorityTaskId }));
+                }
+                if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+                highlightTimerRef.current = setTimeout(() => setHighlightedProject(""), 1800);
+            };
+            const getTaskRunState = (task) => {
+                const isDone = task["완료여부"] === 'O' || task["완료여부"] === 'o';
+                const hasStart = !!task["시작시간"];
+                const hasEnd = !!task["종료시간"];
+                if (isDone || (hasStart && hasEnd)) return "done";
+                if (hasStart && !hasEnd) return "running";
+                return "idle";
+            };
+            const appendRunLog = (taskId, action, time) => {
+                try {
+                    const raw = localStorage.getItem("task_run_logs");
+                    const parsed = raw ? JSON.parse(raw) : {};
+                    const prev = parsed[taskId] || [];
+                    parsed[taskId] = [...prev, { action, time, at: new Date().toISOString() }];
+                    localStorage.setItem("task_run_logs", JSON.stringify(parsed));
+                } catch (e) {
+                    console.warn("run log save failed", e);
+                }
+            };
+            const getTaskRunLogs = (taskId) => {
+                if (!taskId) return [];
+                try {
+                    const raw = localStorage.getItem("task_run_logs");
+                    const parsed = raw ? JSON.parse(raw) : {};
+                    const list = parsed[taskId] || [];
+                    return Array.isArray(list) ? list : [];
+                } catch {
+                    return [];
+                }
+            };
+            const getTaskRunSessions = (taskId) => {
+                const logs = getTaskRunLogs(taskId);
+                const sessions = [];
+                let pendingStart = null;
+                logs.forEach((log) => {
+                    if (log.action === "start") {
+                        pendingStart = log;
+                    }
+                    if (log.action === "complete" && pendingStart) {
+                        sessions.push({
+                            start: pendingStart.time,
+                            end: log.time,
+                            durationMins: calcDurationFromHHMM(pendingStart.time, log.time),
+                            startAt: pendingStart.at,
+                            endAt: log.at
+                        });
+                        pendingStart = null;
+                    }
+                });
+                return sessions;
+            };
+            const getRecommendedChartMode = (proj) => {
+                const tasks = proj.allTasks || [];
+                if (tasks.length === 0) return "date";
+                const withMilestone = tasks.filter(t => ["P1", "P2", "P3", "P4"].includes(t["milestone"])).length;
+                const milestoneRatio = withMilestone / tasks.length;
+                if (milestoneRatio >= 0.6) return "milestone";
+                return "date";
+            };
+            const getChartMode = (proj) => {
+                const key = getProjectKey(proj.name);
+                return projectChartModes[key] || getRecommendedChartMode(proj);
+            };
+            const setChartMode = (projName, mode) => {
+                const key = getProjectKey(projName);
+                setProjectChartModes(prev => ({ ...prev, [key]: mode }));
+            };
+
+            const fetchData = async () => {
+                setLoading(true);
+                const { data, error } = await supabaseClient
+                    .from('tasks')
+                    .select('ID, 날짜, 마감일, 대카테고리, 중카테고리, 내용, 완료여부, milestone, 예상시간, 시작시간, 종료시간');
+                if (error) console.error("Error:", error);
+                else setRawData(data || []);
+                setLoading(false);
+            };
+
+            useEffect(() => { fetchData(); }, []);
+
+            useEffect(() => {
+                const key = "last_visit";
+                const lastStr = localStorage.getItem(key);
+                if (lastStr) {
+                    const diff = Math.floor((Date.now() - new Date(lastStr)) / 86400000);
+                    if (diff >= 3) {
+                        setDaysSinceLastVisit(diff);
+                        setShowWelcomeBack(true);
+                        setTimeout(() => setShowWelcomeBack(false), 5000);
+                    }
+                }
+                localStorage.setItem(key, new Date().toISOString());
+            }, []);
+
+            const processedData = useMemo(() => {
+                if (rawData.length === 0) return {};
+                const groups = {};
+                const today = new Date();
+                today.setHours(0,0,0,0);
+
+                rawData.forEach(row => {
+                    const big = row["대카테고리"] || "미분류";
+                    const mid = row["중카테고리"] || "기타";
+                    if (!groups[big]) groups[big] = {};
+                    if (!groups[big][mid]) groups[big][mid] = { name: mid, tasks: [], earliestDate: null };
+                    groups[big][mid].tasks.push(row);
+                    const rowDate = new Date(row["날짜"] || row["마감일"]);
+                    if (!isNaN(rowDate) && (!groups[big][mid].earliestDate || rowDate < groups[big][mid].earliestDate)) {
+                        groups[big][mid].earliestDate = rowDate;
+                    }
+                });
+
+                const result = {};
+                for (const big in groups) {
+                    result[big] = Object.values(groups[big]).map(proj => {
+                        const start = proj.earliestDate || new Date();
+                        const diffTime = Math.abs(new Date() - start);
+                        const currentDay = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1;
+
+                        let totalDone = 0;
+                        const today = new Date();
+                        today.setHours(0,0,0,0);
+                        const sortedTasks = proj.tasks.sort((a,b) => new Date(a["날짜"]||a["마감일"]) - new Date(b["날짜"]||b["마감일"])).map(task => {
+                            const isDone = task["완료여부"] === 'O' || task["완료여부"] === 'o';
+                            if (isDone) totalDone++;
+                            let isDelayed = false;
+                            let delayDays = 0;
+                            if (!isDone && task["마감일"]) {
+                                const due = new Date(task["마감일"]);
+                                due.setHours(0,0,0,0);
+                                if (due < today) {
+                                    isDelayed = true;
+                                    delayDays = Math.floor((today - due) / (1000 * 60 * 60 * 24));
+                                }
+                            }
+                            return { ...task, isDone, isDelayed, delayDays };
+                        });
+
+                        const getPhaseData = (pTag) => {
+                            const pTasks = sortedTasks.filter(t => t.milestone === pTag);
+                            const total = pTasks.length;
+                            const done = pTasks.filter(t => t.isDone).length;
+                            return { total, done, percent: total === 0 ? 0 : Math.round((done/total)*100), tasks: pTasks };
+                        };
+
+                        return {
+                            name: proj.name,
+                            startDate: start.toISOString().split('T')[0],
+                            currentDay,
+                            totalTasks: proj.tasks.length,
+                            totalDone,
+                            totalPercent: proj.tasks.length === 0 ? 0 : Math.round((totalDone/proj.tasks.length)*100),
+                            allTasks: sortedTasks,
+                            phases: {
+                                P1: { label: "전략 분석", color: "green", ...getPhaseData('P1') },
+                                P2: { label: "문서 저격", color: "blue", ...getPhaseData('P2') },
+                                P3: { label: "실전 훈련", color: "orange", ...getPhaseData('P3') },
+                                P4: { label: "최종 제출", color: "red", ...getPhaseData('P4') }
+                            }
+                        };
+                    });
+                }
+                return result;
+            }, [rawData]);
+
+            const majorCategoryOptions = useMemo(() => {
+                return Array.from(new Set(rawData.map(row => (row["대카테고리"] || "").trim()).filter(Boolean)));
+            }, [rawData]);
+
+            const minorCategoryMap = useMemo(() => {
+                const map = {};
+                rawData.forEach(row => {
+                    const big = (row["대카테고리"] || "").trim();
+                    const mid = (row["중카테고리"] || "").trim();
+                    if (!big || !mid) return;
+                    if (!map[big]) map[big] = new Set();
+                    map[big].add(mid);
+                });
+                const result = {};
+                Object.keys(map).forEach(key => {
+                    result[key] = Array.from(map[key]);
+                });
+                return result;
+            }, [rawData]);
+
+            const currentProjectList = processedData[activeTab] || [];
+
+            // ── 오늘의 핵심 태스크 자동 선정 ──
+            // 우선순위: 지연 → 오늘 마감 → D-7 이내 임박 → P1→P4 단계 순
+            const todayFocusTasks = useMemo(() => {
+                const dayMs = 1000 * 60 * 60 * 24;
+                const todayD = toDateOnly(new Date());
+                const allTasks = [];
+                Object.entries(processedData).forEach(([category, projects]) => {
+                    projects.forEach(proj => {
+                        (proj.allTasks || []).forEach(t => {
+                            if (!t.isDone) allTasks.push({ ...t, _projName: proj.name, _category: category });
+                        });
+                    });
+                });
+                const scored = allTasks.map(t => {
+                    let score = 0, reason = "", tag = "";
+                    if (t.isDelayed) {
+                        score = 1000 + (t.delayDays || 0);
+                        reason = `${t.delayDays}일 쉬었어요`;
+                        tag = "delayed";
+                    } else {
+                        const due = toDateOnly(t["마감일"] || t["날짜"]);
+                        const diff = (due && todayD) ? Math.floor((due - todayD) / dayMs) : null;
+                        if (diff === 0) {
+                            score = 900; reason = "오늘 마감"; tag = "today";
+                        } else if (diff !== null && diff > 0 && diff <= 7) {
+                            score = 800 - diff; reason = `D-${diff}`; tag = "soon";
+                        } else {
+                            const phaseScore = { P1: 40, P2: 30, P3: 20, P4: 10 };
+                            score = phaseScore[t["milestone"]] || 5;
+                            reason = t["milestone"] || "진행 중";
+                            tag = "phase";
+                        }
+                    }
+                    return { ...t, _score: score, _reason: reason, _tag: tag };
+                });
+                return scored.sort((a, b) => b._score - a._score).slice(0, 3);
+            }, [processedData]);
+
+            const filteredFocusTasks = useMemo(() => {
+                if (brainState === "fog") {
+                    const micro = todayFocusTasks.filter(t => {
+                        const mins = parseInt((t["예상시간"] || "").replace(/\D/g, ""));
+                        return isNaN(mins) || mins <= 10;
+                    });
+                    return micro.length > 0 ? micro : todayFocusTasks;
+                }
+                return todayFocusTasks;
+            }, [todayFocusTasks, brainState]);
+
+            useEffect(() => {
+                const categories = Object.keys(processedData);
+                if (categories.length > 0 && !activeTab) setActiveTab(categories[0]);
+            }, [processedData, activeTab]);
+
+            useEffect(() => {
+                if (!majorCategorySelect && activeTab && majorCategoryOptions.includes(activeTab)) {
+                    setMajorCategorySelect(activeTab);
+                }
+            }, [activeTab, majorCategoryOptions, majorCategorySelect]);
+
+            useEffect(() => {
+                if (!quickTargetProject && currentProjectList.length > 0) {
+                    setQuickTargetProject(currentProjectList[0].name);
+                }
+            }, [currentProjectList, quickTargetProject]);
+
+            useEffect(() => {
+                localStorage.setItem("project_chart_modes", JSON.stringify(projectChartModes));
+            }, [projectChartModes]);
+
+            useEffect(() => {
+                return () => {
+                    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+                };
+            }, []);
+
+            useEffect(() => {
+                if (viewMode !== "focus") { setElapsedSec(0); return; }
+                const focusTask = filteredFocusTasks[focusIndex];
+                if (!focusTask || getTaskRunState(focusTask) !== "running") {
+                    setElapsedSec(0); return;
+                }
+                const timer = setInterval(() => setElapsedSec(s => s + 1), 1000);
+                return () => clearInterval(timer);
+            }, [viewMode, focusIndex, filteredFocusTasks]);
+
+            const resolveModelId = async (key) => {
+                const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`);
+                const listData = await listRes.json();
+                if (listData.error) throw new Error(listData.error.message || "모델 목록 조회 실패");
+
+                const models = listData.models || [];
+                const available = new Set(
+                    models
+                        .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+                        .map(m => (m.name || '').replace('models/', ''))
+                );
+
+                const selected = MODEL_CANDIDATES.find(m => available.has(m));
+                if (!selected) {
+                    throw new Error("generateContent를 지원하는 호환 모델을 찾지 못했습니다.");
+                }
+                return selected;
+            };
+
+            const handleAISplit = async () => {
+                if (!aiGoal || !apiKey) return alert("목표와 API Key를 모두 입력해주세요.");
+                const finalMajorCategory = (majorCategorySelect === CUSTOM_OPTION ? majorCategoryCustom : majorCategorySelect).trim();
+                const finalMinorCategory = (minorCategorySelect === CUSTOM_OPTION ? minorCategoryCustom : minorCategorySelect).trim();
+                if (!finalMajorCategory || !finalMinorCategory) return alert("대카테고리와 중카테고리를 설정해주세요.");
+
+                localStorage.setItem("gemini_api_key", apiKey);
+                setIsGenerating(true);
+                try {
+                    const todayStr = new Date().toISOString().split('T')[0];
+                    const prompt = `너는 생산성 전문가야. 사용자의 목표: "${aiGoal}"를 달성하기 위한 10일간의 상세 실행 계획을 세워줘.
+                    결과는 반드시 순수한 JSON 배열 형식으로만 반환해.
+                    JSON 구조: [{"날짜": "YYYY-MM-DD", "대카테고리": "분류", "중카테고리": "프로젝트명", "내용": "할일", "milestone": "P1~P4", "예상시간": "00분"}]
+                    * milestone 기준: P1(전략분석), P2(문서저격), P3(실전훈련), P4(최종제출)
+                    * 모든 항목의 대카테고리는 "${finalMajorCategory}"로 고정
+                    * 모든 항목의 중카테고리는 "${finalMinorCategory}"로 고정
+                    * 오늘(${todayStr})부터 10일치 데이터를 생성해.`;
+                    const modelId = await resolveModelId(apiKey);
+
+                    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`, {
+                        method: 'POST',
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                    });
+                    const resData = await response.json();
+
+                    if (resData.error) throw new Error(resData.error.message || "API 호출 오류");
+
+                    const text = resData.candidates?.[0]?.content?.parts?.[0]?.text;
+                    if (!text) throw new Error("AI 응답 구조가 올바르지 않습니다.");
+
+                    const jsonMatch = text.match(/\[[\s\S]*\]/);
+                    if (!jsonMatch) throw new Error("JSON 형식을 찾을 수 없습니다.");
+
+                    const tasks = JSON.parse(jsonMatch[0]);
+                    const normalizedTasks = tasks.map((task) => ({
+                        ...task,
+                        "ID": task["ID"] || crypto.randomUUID(),
+                        "대카테고리": finalMajorCategory,
+                        "중카테고리": finalMinorCategory
+                    }));
+                    const { error } = await supabaseClient.from('tasks').insert(normalizedTasks);
+                    if (error) throw error;
+
+                    alert("AI가 프로젝트를 성공적으로 설계했습니다!");
+                    setIsModalOpen(false);
+                    setAiGoal("");
+                    setMinorCategorySelect("");
+                    setMinorCategoryCustom("");
+                    fetchData();
+                } catch (e) {
+                    console.error(e);
+                    alert("AI 처리 중 오류가 발생했습니다: " + e.message);
+                } finally {
+                    setIsGenerating(false);
+                }
+            };
+
+            const handlePlayTask = async (task) => {
+                if (!task["ID"]) return alert("ID가 없는 작업은 재생할 수 없습니다.");
+                try {
+                    setPlayingTaskId(task["ID"]);
+                    const now = new Date();
+                    const nowHHMM = toHHMM(now);
+                    const runState = getTaskRunState(task);
+                    const payload = runState === "running"
+                        ? { "종료시간": nowHHMM, "완료여부": "O" }
+                        : { "시작시간": nowHHMM, "종료시간": null, "완료여부": "" };
+                    const { error } = await supabaseClient
+                        .from('tasks')
+                        .update(payload)
+                        .eq('ID', task["ID"]);
+                    if (error) throw error;
+                    appendRunLog(task["ID"], runState === "running" ? "complete" : "start", nowHHMM);
+                    await fetchData();
+                } catch (e) {
+                    console.error(e);
+                    alert("재생 처리 중 오류가 발생했습니다: " + e.message);
+                } finally {
+                    setPlayingTaskId(null);
+                }
+            };
+
+            const splitTextToRows = async ({ baseText, baseDate, baseDueDate, baseMilestone, baseMajor, baseMinor }) => {
+                if (!apiKey) throw new Error("쪼개기에는 Gemini API Key가 필요합니다.");
+                const modelId = await resolveModelId(apiKey);
+                const prompt = `다음 작업을 더 작은 실행 단위로 3~5개로 쪼개줘.
+원본 작업: "${baseText}"
+반환은 반드시 JSON 배열만:
+[{"내용":"...", "예상시간":"00분", "milestone":"P1~P4"}]
+조건:
+- 각 작업은 5~30분 단위의 아주 작은 행동
+- milestone은 ${baseMilestone} 중심으로 맞춰서 생성`;
+
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                });
+                const resData = await response.json();
+                if (resData.error) throw new Error(resData.error.message || "API 호출 오류");
+
+                const text = resData.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (!text) throw new Error("AI 응답 구조가 올바르지 않습니다.");
+                const jsonMatch = text.match(/\[[\s\S]*\]/);
+                if (!jsonMatch) throw new Error("JSON 형식을 찾을 수 없습니다.");
+
+                const splitTasks = JSON.parse(jsonMatch[0]);
+                return splitTasks.map((item) => ({
+                    "ID": crypto.randomUUID(),
+                    "날짜": baseDate,
+                    "마감일": baseDueDate || baseDate,
+                    "대카테고리": baseMajor,
+                    "중카테고리": baseMinor,
+                    "내용": item["내용"] || "세부 작업",
+                    "milestone": item["milestone"] || baseMilestone,
+                    "예상시간": item["예상시간"] || "15분",
+                    "완료여부": ""
+                }));
+            };
+
+            const openProjectAction = (proj, action) => {
+                const projectKey = getProjectKey(proj.name);
+                const firstTask = proj.allTasks?.[0] || null;
+                const todayStr = new Date().toISOString().split('T')[0];
+                const baseForm = {
+                    mode: 'single',
+                    targetTaskId: firstTask?.["ID"] || "",
+                    content: firstTask?.["내용"] || "",
+                    date: firstTask?.["날짜"] || firstTask?.["마감일"] || todayStr,
+                    dueDate: firstTask?.["마감일"] || firstTask?.["날짜"] || todayStr,
+                    milestone: firstTask?.["milestone"] || "P1",
+                    expected: firstTask?.["예상시간"] || "15분"
+                };
+                setProjectActions(prev => ({ ...prev, [projectKey]: action }));
+                setProjectForms(prev => ({ ...prev, [projectKey]: baseForm }));
+            };
+
+            const closeProjectAction = (projName) => {
+                const projectKey = getProjectKey(projName);
+                setProjectActions(prev => ({ ...prev, [projectKey]: null }));
+            };
+
+            const updateProjectForm = (projName, patch) => {
+                const projectKey = getProjectKey(projName);
+                setProjectForms(prev => ({
+                    ...prev,
+                    [projectKey]: { ...(prev[projectKey] || {}), ...patch }
+                }));
+            };
+
+            const applySelectedTaskToForm = (proj, taskId) => {
+                const selected = (proj.allTasks || []).find(t => t["ID"] === taskId);
+                if (!selected) return;
+                updateProjectForm(proj.name, {
+                    targetTaskId: taskId,
+                    content: selected["내용"] || "",
+                    date: selected["날짜"] || selected["마감일"] || "",
+                    dueDate: selected["마감일"] || selected["날짜"] || "",
+                    milestone: selected["milestone"] || "P1",
+                    expected: selected["예상시간"] || "15분"
+                });
+            };
+
+            const submitProjectAction = async (proj) => {
+                const projectKey = getProjectKey(proj.name);
+                const action = projectActions[projectKey];
+                const form = projectForms[projectKey] || {};
+                const mode = form.mode || "single";
+                const content = (form.content || "").trim();
+                const date = form.date || new Date().toISOString().split('T')[0];
+                const dueDate = form.dueDate || date;
+                const milestone = form.milestone || "P1";
+                const expected = form.expected || "15분";
+                const targetTaskId = form.targetTaskId;
+
+                try {
+                    if (action === "add") {
+                        if (!content) return alert("추가할 계획 내용을 입력해주세요.");
+                        if (mode === "single") {
+                            const row = {
+                                "ID": crypto.randomUUID(),
+                                "날짜": date,
+                                "마감일": dueDate,
+                                "대카테고리": activeTab || "미분류",
+                                "중카테고리": proj.name,
+                                "내용": content,
+                                "milestone": milestone,
+                                "예상시간": expected,
+                                "완료여부": ""
+                            };
+                            const { error } = await supabaseClient.from('tasks').insert([row]);
+                            if (error) throw error;
+                        } else {
+                            const rows = await splitTextToRows({
+                                baseText: content, baseDate: date, baseDueDate: dueDate,
+                                baseMilestone: milestone, baseMajor: activeTab || "미분류", baseMinor: proj.name
+                            });
+                            const { error } = await supabaseClient.from('tasks').insert(rows);
+                            if (error) throw error;
+                        }
+                    }
+
+                    if (action === "edit") {
+                        if (!targetTaskId) return alert("수정할 계획을 선택해주세요.");
+                        if (!content) return alert("수정할 계획 내용을 입력해주세요.");
+                        if (mode === "single") {
+                            const { error } = await supabaseClient
+                                .from('tasks')
+                                .update({ "날짜": date, "마감일": dueDate, "대카테고리": activeTab || "미분류",
+                                          "중카테고리": proj.name, "내용": content, "milestone": milestone, "예상시간": expected })
+                                .eq('ID', targetTaskId);
+                            if (error) throw error;
+                        } else {
+                            const rows = await splitTextToRows({
+                                baseText: content, baseDate: date, baseDueDate: dueDate,
+                                baseMilestone: milestone, baseMajor: activeTab || "미분류", baseMinor: proj.name
+                            });
+                            const { error: delError } = await supabaseClient.from('tasks').delete().eq('ID', targetTaskId);
+                            if (delError) throw delError;
+                            const { error: insError } = await supabaseClient.from('tasks').insert(rows);
+                            if (insError) throw insError;
+                        }
+                    }
+
+                    if (action === "delete") {
+                        if (!targetTaskId) return alert("삭제할 계획을 선택해주세요.");
+                        if (!confirm("선택한 계획을 삭제할까요?")) return;
+                        const { error } = await supabaseClient.from('tasks').delete().eq('ID', targetTaskId);
+                        if (error) throw error;
+                    }
+
+                    await fetchData();
+                    closeProjectAction(proj.name);
+                } catch (e) {
+                    console.error(e);
+                    alert("프로젝트 작업 처리 중 오류가 발생했습니다: " + e.message);
+                }
+            };
+
+            const handleQuickAdd = async () => {
+                if (!quickTargetProject) return alert("대상 중카테고리를 선택해주세요.");
+                if (!quickContent.trim()) return alert("빠른 추가 내용을 입력해주세요.");
+                try {
+                    setQuickSaving(true);
+                    if (quickMode === "single") {
+                        const row = {
+                            "ID": crypto.randomUUID(),
+                            "날짜": quickDate,
+                            "마감일": quickDueDate || quickDate,
+                            "대카테고리": activeTab || "미분류",
+                            "중카테고리": quickTargetProject,
+                            "내용": quickContent.trim(),
+                            "milestone": quickMilestone,
+                            "예상시간": quickExpected || "20분",
+                            "완료여부": ""
+                        };
+                        const { error } = await supabaseClient.from('tasks').insert([row]);
+                        if (error) throw error;
+                    } else {
+                        const rows = await splitTextToRows({
+                            baseText: quickContent.trim(), baseDate: quickDate, baseDueDate: quickDueDate || quickDate,
+                            baseMilestone: quickMilestone, baseMajor: activeTab || "미분류", baseMinor: quickTargetProject
+                        });
+                        const { error } = await supabaseClient.from('tasks').insert(rows);
+                        if (error) throw error;
+                    }
+                    setQuickContent("");
+                    await fetchData();
+                } catch (e) {
+                    console.error(e);
+                    alert("빠른 추가 처리 중 오류가 발생했습니다: " + e.message);
+                } finally {
+                    setQuickSaving(false);
+                }
+            };
+
+            const handleSplitTask = async (task) => {
+                if (!task["ID"]) return alert("ID가 없는 작업은 쪼개기할 수 없습니다.");
+                if (!apiKey) return alert("쪼개기에는 Gemini API Key가 필요합니다.");
+
+                const baseDate = task["날짜"] || task["마감일"] || new Date().toISOString().split('T')[0];
+                const baseMajor = task["대카테고리"] || activeTab || "미분류";
+                const baseMinor = task["중카테고리"] || "기타";
+                const baseMilestone = task["milestone"] || "P1";
+                const baseText = task["내용"] || "";
+
+                try {
+                    setSplittingTaskId(task["ID"]);
+                    const rows = await splitTextToRows({
+                        baseText, baseDate, baseDueDate: task["마감일"] || baseDate,
+                        baseMilestone, baseMajor, baseMinor
+                    });
+                    const { error } = await supabaseClient.from('tasks').insert(rows);
+                    if (error) throw error;
+                    await fetchData();
+                } catch (e) {
+                    console.error(e);
+                    alert("쪼개기 처리 중 오류가 발생했습니다: " + e.message);
+                } finally {
+                    setSplittingTaskId(null);
+                }
+            };
+
+            const handleDeleteTask = async (task) => {
+                if (!task["ID"]) return alert("ID가 없는 작업은 삭제할 수 없습니다.");
+                if (!confirm("이 계획을 삭제할까요?")) return;
+                try {
+                    const { error } = await supabaseClient
+                        .from('tasks')
+                        .delete()
+                        .eq('ID', task["ID"]);
+                    if (error) throw error;
+                    await fetchData();
+                } catch (e) {
+                    console.error(e);
+                    alert("삭제 처리 중 오류가 발생했습니다: " + e.message);
+                }
+            };
+
+            const addXP = (pts) => {
+                const newXP = dailyXP + pts;
+                setDailyXP(newXP);
+                localStorage.setItem("daily_xp", JSON.stringify({ date: new Date().toDateString(), xp: newXP }));
+            };
+
+            const selectBrainState = (s) => {
+                setBrainState(s);
+                localStorage.setItem("brain_state_today", s);
+            };
+
+            const triggerParticles = () => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const ctx = canvas.getContext('2d');
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+                const particles = Array.from({ length: 20 }, () => ({
+                    x: canvas.width / 2,
+                    y: canvas.height / 2,
+                    vx: (Math.random() - 0.5) * 10,
+                    vy: (Math.random() - 0.8) * 10,
+                    alpha: 1,
+                    color: `hsl(${Math.floor(Math.random() * 60 + 30)}, 100%, 60%)`
+                }));
+                const startTime = performance.now();
+                const animate = (now) => {
+                    const elapsed = now - startTime;
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    particles.forEach(p => {
+                        p.x += p.vx;
+                        p.y += p.vy;
+                        p.vy += 0.3;
+                        p.alpha = Math.max(0, 1 - elapsed / 1500);
+                        ctx.globalAlpha = p.alpha;
+                        ctx.fillStyle = p.color;
+                        ctx.beginPath();
+                        ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+                        ctx.fill();
+                    });
+                    ctx.globalAlpha = 1;
+                    if (elapsed < 1500) requestAnimationFrame(animate);
+                    else ctx.clearRect(0, 0, canvas.width, canvas.height);
+                };
+                requestAnimationFrame(animate);
+            };
+
+            const triggerSound = () => {
+                try {
+                    const actx = new (window.AudioContext || window.webkitAudioContext)();
+                    const osc = actx.createOscillator();
+                    const gain = actx.createGain();
+                    osc.connect(gain); gain.connect(actx.destination);
+                    osc.frequency.setValueAtTime(523, actx.currentTime);
+                    osc.frequency.setValueAtTime(659, actx.currentTime + 0.1);
+                    osc.frequency.setValueAtTime(784, actx.currentTime + 0.2);
+                    gain.gain.setValueAtTime(0.3, actx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 0.6);
+                    osc.start();
+                    osc.stop(actx.currentTime + 0.6);
+                } catch (e) {
+                    console.warn("Sound failed:", e);
+                }
+            };
+
+            const handleFocusComplete = async (task) => {
+                await handlePlayTask(task);
+                triggerParticles();
+                triggerSound();
+                addXP(10);
+                setStreak(s => s + 1);
+                setShowCelebration(true);
+                setTimeout(() => {
+                    setShowCelebration(false);
+                    setFocusIndex(0);
+                }, 1800);
+            };
+
+            if (loading && rawData.length === 0) return <div className="mt-40 text-center text-zinc-500 animate-pulse">데이터 로드 중...</div>;
+
+            const projects = processedData[activeTab] || [];
+            const selectedMajorForMinor = majorCategorySelect && majorCategorySelect !== CUSTOM_OPTION ? majorCategorySelect : "";
+            const minorCategoryOptions = selectedMajorForMinor
+                ? (minorCategoryMap[selectedMajorForMinor] || [])
+                : Array.from(new Set(rawData.map(row => (row["중카테고리"] || "").trim()).filter(Boolean)));
+            const allActiveTasks = projects.flatMap(p => p.allTasks || []);
+            const allDatedTasks = allActiveTasks
+                .map(t => toDateOnly(t["날짜"] || t["마감일"]))
+                .filter(Boolean);
+            const majorStartDate = allDatedTasks.length ? new Date(Math.min(...allDatedTasks.map(d => d.getTime()))) : toDateOnly(new Date());
+            const majorEndDate = allDatedTasks.length ? new Date(Math.max(...allDatedTasks.map(d => d.getTime()))) : majorStartDate;
+            const majorTotal = allActiveTasks.length;
+            const majorDone = allActiveTasks.filter(t => t.isDone).length;
+            const majorDelayed = allActiveTasks.filter(t => t.isDelayed).length;
+            const majorProgress = majorTotal ? Math.round((majorDone / majorTotal) * 100) : 0;
+            const majorPhaseStats = ["P1", "P2", "P3", "P4"].map((p) => {
+                const list = allActiveTasks.filter(t => t["milestone"] === p);
+                const done = list.filter(t => t.isDone).length;
+                return { p, total: list.length, done, percent: list.length ? Math.round((done / list.length) * 100) : 0 };
+            });
+            const majorMinorStats = projects.map((proj) => {
+                const total = proj.allTasks.length;
+                const done = proj.allTasks.filter(t => t.isDone).length;
+                const delayed = proj.allTasks.filter(t => t.isDelayed).length;
+                return { name: proj.name, total, done, delayed, percent: total ? Math.round((done / total) * 100) : 0 };
+            });
+            const boardProjects = showDelayedOnly
+                ? projects.filter(p => p.allTasks.some(t => t.isDelayed))
+                : projects;
+            const majorDayMs = 1000 * 60 * 60 * 24;
+            const majorRangeDays = Math.max(1, Math.floor((majorEndDate - majorStartDate) / majorDayMs) + 1);
+            const todayDateOnly = toDateOnly(new Date());
+            const majorTodayOffset = todayDateOnly ? Math.floor((todayDateOnly - majorStartDate) / majorDayMs) : -1;
+            const majorTodayInRange = majorTodayOffset >= 0 && majorTodayOffset < majorRangeDays;
+            const majorTodayLeft = `${((majorTodayOffset + 0.5) / majorRangeDays) * 100}%`;
+            const getExpectedMins = (value) => {
+                if (!value) return 0;
+                const n = parseInt(String(value).replace(/[^0-9]/g, ""), 10);
+                return Number.isNaN(n) ? 0 : n;
+            };
+            const dailyCapacityMins = 6 * 60;
+            const todayTasks = allActiveTasks.filter((t) => {
+                const d = toDateOnly(t["날짜"] || t["마감일"]);
+                return d && todayDateOnly && d.getTime() === todayDateOnly.getTime();
+            });
+            const todayExpectedMins = todayTasks.reduce((sum, t) => sum + getExpectedMins(t["예상시간"]), 0);
+            const todayActualMins = todayTasks.reduce((sum, t) => {
+                const mins = calcActualMinutes(t["시작시간"], t["종료시간"]);
+                return mins === null ? sum : sum + mins;
+            }, 0);
+            const completionSamples = allActiveTasks
+                .map((t) => {
+                    const expected = getExpectedMins(t["예상시간"]);
+                    const actual = calcActualMinutes(t["시작시간"], t["종료시간"]);
+                    if (!expected || actual === null) return null;
+                    return actual - expected;
+                })
+                .filter((v) => v !== null);
+            const medianDeltaMins = completionSamples.length
+                ? completionSamples.slice().sort((a, b) => a - b)[Math.floor(completionSamples.length / 2)]
+                : 0;
+            const timelineRows = projects.map((proj) => {
+                const dated = (proj.allTasks || [])
+                    .map((t) => toDateOnly(t["날짜"] || t["마감일"]))
+                    .filter(Boolean);
+                if (dated.length === 0) {
+                    return { name: proj.name, left: "0%", width: "8%", period: "-/- - -/-" };
+                }
+                const start = new Date(Math.min(...dated.map((d) => d.getTime())));
+                const end = new Date(Math.max(...dated.map((d) => d.getTime())));
+                const startOffset = Math.max(0, Math.floor((start - majorStartDate) / majorDayMs));
+                const duration = Math.max(1, Math.floor((end - start) / majorDayMs) + 1);
+                return {
+                    name: proj.name,
+                    left: `${(startOffset / majorRangeDays) * 100}%`,
+                    width: `${Math.max((duration / majorRangeDays) * 100, 6)}%`,
+                    period: `${getFormatDate(start)}-${getFormatDate(end)}`
+                };
+            });
+            const signal = majorMinorStats.reduce(
+                (acc, row) => {
+                    if (row.delayed > 0) acc.danger += 1;
+                    else if (row.percent < 60) acc.warn += 1;
+                    else acc.ok += 1;
+                    return acc;
+                },
+                { ok: 0, warn: 0, danger: 0 }
+            );
+            const upcomingDeadlines = allActiveTasks
+                .filter((t) => {
+                    if (t.isDone) return false;
+                    const due = toDateOnly(t["마감일"] || t["날짜"]);
+                    if (!due || !todayDateOnly) return false;
+                    const diff = Math.floor((due - todayDateOnly) / majorDayMs);
+                    return diff >= 0 && diff <= 7;
+                })
+                .sort((a, b) => new Date(a["마감일"] || a["날짜"]) - new Date(b["마감일"] || b["날짜"]))
+                .slice(0, 3);
+            const phaseRank = { P1: 1, P2: 2, P3: 3, P4: 4 };
+            const depWarningCount = projects.reduce((count, proj) => {
+                const tasks = proj.allTasks || [];
+                const hasOpenPrior = (rank) => tasks.some((t) => !t.isDone && (phaseRank[t["milestone"]] || 1) < rank);
+                return count + tasks.filter((t) => !t.isDone && hasOpenPrior(phaseRank[t["milestone"]] || 1)).length;
+            }, 0);
+            const sevenDaysAgo = new Date();
+            sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+            sevenDaysAgo.setHours(0, 0, 0, 0);
+            const recent7 = allActiveTasks.filter((t) => {
+                const d = toDateOnly(t["날짜"] || t["마감일"]);
+                return d && d >= sevenDaysAgo;
+            });
+            const recentDone = recent7.filter((t) => t.isDone).length;
+            const recentDelayed = recent7.filter((t) => t.isDelayed).length;
+            const recentRate = recent7.length ? Math.round((recentDone / recent7.length) * 100) : 0;
+            const runLogsCount = (() => {
+                try {
+                    const raw = localStorage.getItem("task_run_logs");
+                    const parsed = raw ? JSON.parse(raw) : {};
+                    return Object.values(parsed).reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
+                } catch {
+                    return 0;
+                }
+            })();
+            const todayTasksByProject = projects
+                .map((proj) => {
+                    const tasks = proj.allTasks || [];
+                    const todayList = tasks.filter((t) => {
+                        const d = toDateOnly(t["날짜"] || t["마감일"]);
+                        return d && todayDateOnly && d.getTime() === todayDateOnly.getTime();
+                    });
+                    const nextTask = tasks.find((t) => !t.isDone) || null;
+                    const waiting = todayList.filter((t) => !t.isDone && (!nextTask || t["ID"] !== nextTask["ID"]));
+                    return { name: proj.name, todayList, nextTask, waiting, delayed: proj.allTasks.some((t) => t.isDelayed) };
+                })
+                .filter((row) => row.todayList.length > 0 || row.nextTask);
+
+            // 오늘의 핵심 태그 설정
+            const focusTagMap = {
+                delayed: { bar: "bg-amber-500",  cls: "text-amber-300 bg-amber-500/10 border-amber-500/20" },
+                today:   { bar: "bg-orange-500", cls: "text-orange-300 bg-orange-500/10 border-orange-500/20" },
+                soon:    { bar: "bg-yellow-400", cls: "text-yellow-300 bg-yellow-500/10 border-yellow-500/20" },
+                phase:   { bar: "bg-blue-500",   cls: "text-blue-300 bg-blue-500/10 border-blue-500/20" },
+            };
+
+            return (
+                <div className="w-full animate-fade-in relative pb-20">
+
+                    {/* Particle Canvas */}
+                    <canvas ref={canvasRef} className="fixed inset-0 pointer-events-none z-50" style={{width: '100vw', height: '100vh'}} />
+
+                    {/* Celebration Overlay */}
+                    {showCelebration && (
+                        <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
+                            <div className="bg-zinc-900/95 backdrop-blur-sm border border-emerald-500/40 rounded-3xl px-12 py-8 text-center shadow-2xl">
+                                <p className="text-5xl mb-3">🎉</p>
+                                <p className="text-2xl font-black text-emerald-400">완료!</p>
+                                <p className="text-xl text-white font-bold mt-1">+10 XP</p>
+                                {streak > 1 && <p className="text-sm text-yellow-400 mt-2">🔥 {streak}연속 완료!</p>}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Welcome-Back Banner */}
+                    {showWelcomeBack && (
+                        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-40 max-w-sm w-full px-4">
+                            <div className="glass-panel px-6 py-4 flex items-center gap-4 border-blue-500/30">
+                                <span className="text-2xl">👋</span>
+                                <div className="flex-1">
+                                    <p className="text-sm font-bold text-white">
+                                        {daysSinceLastVisit}일만이네요! 잘 돌아오셨어요.
+                                    </p>
+                                    <p className="text-xs text-zinc-400">오늘 하나만 해봐요 💙</p>
+                                </div>
+                                <button onClick={() => setShowWelcomeBack(false)} className="text-zinc-600 hover:text-zinc-300 text-lg">✕</button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ── 오늘의 핵심 ── */}
+                    {todayFocusTasks.length > 0 && (
+                        <section className="mb-10">
+                            <div className="flex items-center gap-3 mb-5">
+                                <div className="w-2 h-2 rounded-full bg-white pulse-dot"></div>
+                                <h2 className="text-xs font-bold text-zinc-300 uppercase tracking-widest">오늘의 핵심</h2>
+                                <span className="text-[10px] text-zinc-600">전체 카테고리 자동 선정 · {todayFocusTasks.length}개</span>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                {todayFocusTasks.map((task, i) => {
+                                    const cfg = focusTagMap[task._tag] || focusTagMap.phase;
+                                    const runState = getTaskRunState(task);
+                                    const isPlaying = playingTaskId === task["ID"];
+                                    return (
+                                        <div key={task["ID"] || i} className="glass-panel p-5 relative overflow-hidden focus-card">
+                                            <div className={`absolute left-0 top-0 bottom-0 w-1 ${cfg.bar}`}></div>
+                                            <div className="flex items-start justify-between gap-2 mb-3">
+                                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${cfg.cls}`}>
+                                                    {task._tag === "delayed" && `📌 ${task._reason}`}
+                                                    {task._tag === "today"   && `📅 ${task._reason}`}
+                                                    {task._tag === "soon"    && `⏰ ${task._reason}`}
+                                                    {task._tag === "phase"   && `🎯 ${task._reason}`}
+                                                </span>
+                                                <span className="text-[10px] text-zinc-600 text-right leading-tight">
+                                                    {task._category}<br/>{task._projName}
+                                                </span>
+                                            </div>
+                                            <p className="text-sm font-semibold text-white leading-snug mb-5 line-clamp-2 min-h-[40px]">
+                                                {task["내용"]}
+                                            </p>
+                                            <div className="flex items-center justify-between">
+                                                <div className="flex items-center gap-2">
+                                                    {task["milestone"] && (
+                                                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">
+                                                            {task["milestone"]}
+                                                        </span>
+                                                    )}
+                                                    {task["예상시간"] && (
+                                                        <span className="text-[10px] text-zinc-600">{task["예상시간"]}</span>
+                                                    )}
+                                                </div>
+                                                <button
+                                                    onClick={() => handlePlayTask(task)}
+                                                    disabled={isPlaying}
+                                                    className={`text-[11px] font-bold px-3 py-1.5 rounded-lg border transition-all disabled:opacity-50 ${
+                                                        runState === "done"
+                                                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 cursor-default"
+                                                            : runState === "running"
+                                                            ? "bg-red-500/10 text-red-300 border-red-500/30 hover:bg-red-500/20"
+                                                            : "bg-white/5 text-white border-white/10 hover:bg-white/10"
+                                                    }`}
+                                                >
+                                                    {isPlaying ? "..." : runState === "done" ? "✅ 완료" : runState === "running" ? "⏹ 종료" : "▶ 시작"}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </section>
+                    )}
+
+                    {/* 구분선 */}
+                    <div className="border-t border-zinc-800/60 mb-10"></div>
+
+                    {/* 상단 네비게이션 */}
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-12">
+                        <div className="flex gap-3 overflow-x-auto pb-2 w-full md:w-auto">
+                            {Object.keys(processedData).map(tab => (
+                                <button key={tab} onClick={() => setActiveTab(tab)}
+                                    className={`px-6 py-2.5 rounded-full font-bold text-xs transition-all flex-shrink-0 ${activeTab === tab ? 'tab-active' : 'tab-inactive hover:bg-zinc-800'}`}>
+                                    {tab}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="flex bg-zinc-900 p-1 rounded-xl border border-zinc-800">
+                            <button onClick={() => setViewMode("focus")} className={`px-4 py-2 rounded-lg text-[11px] font-bold transition-all ${viewMode === 'focus' ? 'view-btn-active' : 'text-zinc-500'}`}>🎯 집중</button>
+                            <button onClick={() => setViewMode("board")} className={`px-4 py-2 rounded-lg text-[11px] font-bold transition-all ${viewMode === 'board' ? 'view-btn-active' : 'text-zinc-500'}`}>📋 보드</button>
+                            <button onClick={() => setViewMode("strategy")} className={`px-4 py-2 rounded-lg text-[11px] font-bold transition-all ${viewMode === 'strategy' ? 'view-btn-active' : 'text-zinc-500'}`}>📊 전략</button>
+                            <button onClick={() => setViewMode("manage")} className={`px-4 py-2 rounded-lg text-[11px] font-bold transition-all ${viewMode === 'manage' ? 'view-btn-active' : 'text-zinc-500'}`}>🧭 운영</button>
+                        </div>
+                    </div>
+
+                    {/* 메인 콘텐츠 */}
+                    <main className="min-h-[500px]">
+                        {viewMode === "focus" ? (
+                            <div className="max-w-lg mx-auto expand-anim">
+                                {/* Brain State Check-in */}
+                                {!brainState && (
+                                    <div className="mb-8 text-center">
+                                        <p className="text-sm font-bold text-zinc-300 mb-2">지금 뇌 상태는?</p>
+                                        <p className="text-xs text-zinc-600 mb-5">상태에 맞게 태스크를 자동 필터링합니다</p>
+                                        <div className="flex justify-center gap-4">
+                                            {[
+                                                { key: "energized", emoji: "⚡", label: "에너지 넘침" },
+                                                { key: "normal",    emoji: "😐", label: "보통" },
+                                                { key: "fog",       emoji: "🌫️", label: "뇌 안개" }
+                                            ].map(({ key, emoji, label }) => (
+                                                <button
+                                                    key={key}
+                                                    onClick={() => selectBrainState(key)}
+                                                    className="flex flex-col items-center gap-2 px-6 py-5 rounded-2xl border border-zinc-700 bg-zinc-900 hover:border-zinc-400 hover:bg-zinc-800 transition-all"
+                                                >
+                                                    <span className="text-3xl">{emoji}</span>
+                                                    <span className="text-[11px] text-zinc-400">{label}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* XP Bar */}
+                                {brainState && (
+                                    <div className="mb-6">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <div className="flex items-center gap-2">
+                                                <button onClick={() => selectBrainState("")} className="text-lg" title="뇌 상태 재설정">
+                                                    {brainState === "energized" ? "⚡" : brainState === "normal" ? "😐" : "🌫️"}
+                                                </button>
+                                                <span className="text-[11px] text-zinc-500">오늘 XP: {dailyXP}</span>
+                                            </div>
+                                            {streak > 0 && <span className="text-[11px] text-yellow-400">🔥 {streak}연속</span>}
+                                        </div>
+                                        <div className="bar-track h-2">
+                                            <div
+                                                className="h-full bg-gradient-to-r from-blue-500 to-emerald-500 progress-bar"
+                                                style={{ width: `${Math.min((dailyXP / 100) * 100, 100)}%` }}
+                                            ></div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Single Task Card */}
+                                {(() => {
+                                    const task = filteredFocusTasks[focusIndex];
+                                    if (!task) {
+                                        return (
+                                            <div className="glass-panel p-10 text-center">
+                                                <p className="text-5xl mb-4">🎉</p>
+                                                <p className="text-xl font-black text-white mb-2">모든 핵심 태스크 완료!</p>
+                                                <p className="text-sm text-zinc-400 mb-6">오늘도 잘 하셨습니다.</p>
+                                                <button
+                                                    onClick={() => setFocusIndex(0)}
+                                                    className="px-6 py-3 rounded-xl border border-zinc-700 text-zinc-300 text-sm hover:border-zinc-500 transition-all"
+                                                >
+                                                    처음부터 다시
+                                                </button>
+                                            </div>
+                                        );
+                                    }
+                                    const cfg = focusTagMap[task._tag] || focusTagMap.phase;
+                                    const runState = getTaskRunState(task);
+                                    const isPlaying = playingTaskId === task["ID"];
+                                    const isSplitting = splittingTaskId === task["ID"];
+                                    const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
+                                    const ss = String(elapsedSec % 60).padStart(2, '0');
+                                    return (
+                                        <div className="glass-panel p-8 relative overflow-hidden focus-card">
+                                            <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${cfg.bar}`}></div>
+                                            {/* Header: tag + project */}
+                                            <div className="flex items-center justify-between mb-6">
+                                                <span className={`text-[11px] font-bold px-2.5 py-1 rounded border ${cfg.cls}`}>
+                                                    {task._tag === "delayed" && `📌 ${task._reason}`}
+                                                    {task._tag === "today"   && `📅 ${task._reason}`}
+                                                    {task._tag === "soon"    && `⏰ ${task._reason}`}
+                                                    {task._tag === "phase"   && `🎯 ${task._reason}`}
+                                                </span>
+                                                <span className="text-[11px] text-zinc-500 text-right leading-snug">
+                                                    {task._category}<br/>{task._projName}
+                                                </span>
+                                            </div>
+                                            {/* Task Content */}
+                                            <p className="text-2xl font-black text-white leading-snug mb-5 text-center min-h-[80px] flex items-center justify-center px-2">
+                                                {task["내용"]}
+                                            </p>
+                                            {/* Meta: milestone + expected */}
+                                            <div className="flex items-center justify-center gap-3 mb-6 text-[11px] text-zinc-500">
+                                                {task["milestone"] && (
+                                                    <span className="font-mono px-2 py-0.5 rounded bg-zinc-800 border border-zinc-700">{task["milestone"]}</span>
+                                                )}
+                                                {task["예상시간"] && <span>{task["예상시간"]}</span>}
+                                            </div>
+                                            {/* Timer */}
+                                            {runState === "running" && (
+                                                <div className="text-center mb-6">
+                                                    <span className="text-5xl font-mono font-black text-white tracking-widest">{mm}:{ss}</span>
+                                                </div>
+                                            )}
+                                            {/* Main Button */}
+                                            <div className="flex justify-center mb-5">
+                                                {runState === "done" ? (
+                                                    <div className="px-8 py-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-black text-lg">
+                                                        ✅ 완료됨
+                                                    </div>
+                                                ) : runState === "running" ? (
+                                                    <button
+                                                        onClick={() => handleFocusComplete(task)}
+                                                        disabled={isPlaying}
+                                                        className="px-10 py-5 rounded-2xl bg-emerald-500 text-white font-black text-xl hover:bg-emerald-400 transition-all disabled:opacity-50 shadow-lg shadow-emerald-500/30"
+                                                    >
+                                                        {isPlaying ? "처리 중..." : "⏹ 완료"}
+                                                    </button>
+                                                ) : (
+                                                    <button
+                                                        onClick={() => handlePlayTask(task)}
+                                                        disabled={isPlaying}
+                                                        className="px-10 py-5 rounded-2xl bg-white text-black font-black text-xl hover:bg-zinc-100 transition-all disabled:opacity-50 shadow-lg"
+                                                    >
+                                                        {isPlaying ? "처리 중..." : "▶ 시작"}
+                                                    </button>
+                                                )}
+                                            </div>
+                                            {/* Secondary Buttons */}
+                                            <div className="flex justify-center gap-3">
+                                                <button
+                                                    onClick={() => setFocusIndex(i => i + 1)}
+                                                    className="px-4 py-2 rounded-xl border border-zinc-700 text-zinc-400 text-[11px] hover:border-zinc-500 transition-all"
+                                                >
+                                                    건너뛰기
+                                                </button>
+                                                <button
+                                                    onClick={() => handleSplitTask(task)}
+                                                    disabled={isSplitting || !apiKey}
+                                                    className="px-4 py-2 rounded-xl border border-blue-700/50 text-blue-400 text-[11px] hover:border-blue-500 transition-all disabled:opacity-40"
+                                                >
+                                                    {isSplitting ? "쪼개는 중..." : "✂ 쪼개기"}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
+                                {/* Task counter */}
+                                {filteredFocusTasks.length > 0 && (
+                                    <div className="mt-4 text-center text-[11px] text-zinc-600">
+                                        {Math.min(focusIndex + 1, filteredFocusTasks.length)} / {filteredFocusTasks.length} 태스크
+                                        {brainState === "fog" && <span className="ml-2 text-zinc-700">(뇌 안개 모드: 10분 이하 태스크)</span>}
+                                    </div>
+                                )}
+                            </div>
+                        ) : viewMode === "board" ? (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 expand-anim">
+                                <section>
+                                    <div className="mb-4 flex items-center justify-between gap-3">
+                                        <h2 className="text-sm font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2">
+                                            <span className="w-2 h-2 rounded-full bg-yellow-500 pulse-dot"></span> In Progress
+                                        </h2>
+                                        <button
+                                            onClick={() => setShowDelayedOnly(prev => !prev)}
+                                            className={`text-[10px] font-black px-3 py-1.5 rounded-lg border transition-all ${showDelayedOnly ? 'bg-amber-500/10 text-amber-300 border-amber-500/30' : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'}`}
+                                        >
+                                            {showDelayedOnly ? "미뤄진 것만 ON" : "미뤄진 것만"}
+                                        </button>
+                                    </div>
+                                    {boardProjects.filter(p => p.totalPercent < 100).map(proj => (
+                                        <div key={proj.name} className="glass-panel p-5 relative overflow-hidden mb-4">
+                                            <div className="absolute left-0 top-0 bottom-0 w-1 bg-yellow-500"></div>
+                                            <div className="flex justify-between items-start mb-3">
+                                                <h3 className="text-md font-bold text-white">{proj.name}</h3>
+                                                <div className="flex items-center gap-1">
+                                                    {proj.allTasks.some(t => t.isDelayed) && (
+                                                        <span className="text-[10px] font-black px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">미뤄짐</span>
+                                                    )}
+                                                    <span className="text-[10px] font-black px-2 py-0.5 rounded bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">{proj.totalPercent}%</span>
+                                                </div>
+                                            </div>
+                                            <div className="w-full bar-track h-1.5 mb-4">
+                                                <div className="h-full bg-yellow-500 progress-bar" style={{ width: `${proj.totalPercent}%` }}></div>
+                                            </div>
+                                            <div className="space-y-1.5">
+                                                {(showDelayedOnly ? proj.allTasks.filter(t => t.isDelayed) : proj.allTasks).slice(0, 3).map((task, i) => (
+                                                    <div key={i} className="text-[10px] text-zinc-400 border-b border-zinc-800/50 pb-1 last:border-0">
+                                                        <div className="flex items-center gap-2">
+                                                            <span>{task.isDelayed ? '📌' : task.isDone ? '✅' : '🏃'}</span>
+                                                            <span className={`truncate flex-1 ${task.isDone ? 'line-through opacity-50' : ''}`}>{task["내용"]}</span>
+                                                            <span className={`font-mono ${task.isDelayed ? 'text-amber-400' : 'text-zinc-500'}`}>{getFormatDate(task["날짜"] || task["마감일"])}</span>
+                                                        </div>
+                                                        <div className="mt-1 flex items-center gap-1 pl-5">
+                                                            {task.isDelayed && (
+                                                                <span className="px-1.5 py-0.5 rounded bg-amber-900/30 text-amber-300">{task.delayDays}일 됐어요, 지금 시작!</span>
+                                                            )}
+                                                            {(() => {
+                                                                const actualMins = calcActualMinutes(task["시작시간"], task["종료시간"]);
+                                                                const expectedMins = task["예상시간"] ? parseInt(String(task["예상시간"]).replace(/[^0-9]/g, "")) : null;
+                                                                if (actualMins === null) return null;
+                                                                const isOverTime = expectedMins && actualMins > expectedMins;
+                                                                return (
+                                                                    <span className={`px-1.5 py-0.5 rounded ${isOverTime ? 'bg-red-900/30 text-red-300' : 'bg-emerald-900/30 text-emerald-300'}`}>
+                                                                        실제 {actualMins}분
+                                                                    </span>
+                                                                );
+                                                            })()}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </section>
+                                <section>
+                                    <h2 className="text-sm font-bold text-zinc-500 mb-4 uppercase tracking-widest flex items-center gap-2">
+                                        <span className="w-2 h-2 rounded-full bg-emerald-500"></span> Completed
+                                    </h2>
+                                    {boardProjects.filter(p => p.totalPercent === 100).map(proj => (
+                                        <div key={proj.name} className="glass-panel p-5 relative overflow-hidden mb-4 opacity-60">
+                                            <div className="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500"></div>
+                                            <h3 className="text-md font-bold text-white mb-2">{proj.name}</h3>
+                                            <div className="w-full bar-track h-1.5 bg-emerald-500/20">
+                                                <div className="h-full bg-emerald-500" style={{ width: '100%' }}></div>
+                                            </div>
+                                            <div className="mt-3 space-y-1.5">
+                                                {proj.allTasks.slice(0, 2).map((task, i) => (
+                                                    <div key={i} className="text-[10px] text-zinc-500 flex items-center gap-2">
+                                                        <span>✅</span>
+                                                        <span className="truncate flex-1 line-through">{task["내용"]}</span>
+                                                        <span className="font-mono">{getFormatDate(task["날짜"] || task["마감일"])}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </section>
+                            </div>
+                        ) : viewMode === "strategy" ? (
+                            <div className="space-y-5 expand-anim">
+                                <div className="glass-panel p-6">
+                                    <div className="flex flex-col lg:flex-row gap-4 lg:items-center lg:justify-between mb-4">
+                                        <div>
+                                            <h2 className="text-lg font-black text-white">{activeTab || "대카테고리"} 통합 현황</h2>
+                                            <p className="text-xs text-zinc-500">V3 리스크 요약 + 대카테고리 간트 + V4 빠른추가</p>
+                                        </div>
+                                        <div className="flex gap-2 text-[11px]">
+                                            <span className="px-2 py-1 rounded bg-yellow-500/10 text-yellow-300 border border-yellow-500/30">진행률 {majorProgress}%</span>
+                                            <span className="px-2 py-1 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30">미뤄짐 {majorDelayed}건</span>
+                                            <span className="px-2 py-1 rounded bg-zinc-800 text-zinc-300 border border-zinc-700">{majorDone}/{majorTotal} 완료</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                                        <div className="bg-black/30 border border-zinc-800 rounded-xl p-4">
+                                            <div className="flex justify-between items-center mb-2">
+                                                <div className="flex items-center gap-2">
+                                                    <p className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest">대카테고리 간트</p>
+                                                    <button
+                                                        onClick={() => setTopGanttMode("minor")}
+                                                        className={`text-[10px] px-2 py-0.5 rounded border ${topGanttMode === "minor" ? 'border-yellow-500/40 text-yellow-300 bg-yellow-500/10' : 'border-zinc-700 text-zinc-500'}`}
+                                                    >
+                                                        중카테고리
+                                                    </button>
+                                                    <button
+                                                        onClick={() => setTopGanttMode("phase")}
+                                                        className={`text-[10px] px-2 py-0.5 rounded border ${topGanttMode === "phase" ? 'border-blue-500/40 text-blue-300 bg-blue-500/10' : 'border-zinc-700 text-zinc-500'}`}
+                                                    >
+                                                        P1~P4
+                                                    </button>
+                                                </div>
+                                                <p className="text-[11px] font-mono text-zinc-500">{getFormatDate(majorStartDate)} - {getFormatDate(majorEndDate)}</p>
+                                            </div>
+                                            <div className="space-y-2">
+                                                {topGanttMode === "minor" ? majorMinorStats.map((row) => (
+                                                    <button
+                                                        key={row.name}
+                                                        onClick={() => focusProjectCard(row.name)}
+                                                        className="w-full grid grid-cols-[120px_1fr_76px] gap-2 items-center text-left hover:bg-zinc-900/50 rounded-lg px-1 py-1 transition-colors"
+                                                        title={`${row.name} 카드로 이동`}
+                                                    >
+                                                        <span className="text-[11px] text-zinc-400 truncate">{row.name}</span>
+                                                        <div className="h-3 rounded-full bg-zinc-900 border border-zinc-800 overflow-hidden">
+                                                            <div className={`h-full ${row.delayed > 0 ? 'bg-yellow-500' : 'bg-blue-500'}`} style={{ width: `${row.percent}%` }}></div>
+                                                        </div>
+                                                        <span className={`text-[10px] text-right ${row.delayed > 0 ? 'text-amber-400' : 'text-zinc-500'}`}>
+                                                            {row.done}/{row.total}{row.delayed > 0 ? ` • 미뤄짐 ${row.delayed}` : ""}
+                                                        </span>
+                                                    </button>
+                                                )) : majorPhaseStats.map((row) => (
+                                                    <div key={row.p} className="grid grid-cols-[54px_1fr_54px] gap-2 items-center">
+                                                        <span className="text-[11px] text-zinc-400 font-mono">{row.p}</span>
+                                                        <div className="h-3 rounded-full bg-zinc-900 border border-zinc-800 overflow-hidden">
+                                                            <div className="h-full bg-blue-500" style={{ width: `${row.percent}%` }}></div>
+                                                        </div>
+                                                        <span className="text-[10px] text-zinc-500 text-right">{row.done}/{row.total}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-black/30 border border-zinc-800 rounded-xl p-4">
+                                            <p className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest mb-2">빠른 추가 (V4)</p>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2">
+                                                <select
+                                                    value={quickTargetProject}
+                                                    onChange={(e) => setQuickTargetProject(e.target.value)}
+                                                    className="bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs"
+                                                >
+                                                    <option value="">중카테고리 선택</option>
+                                                    {projects.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+                                                </select>
+                                                <div className="flex gap-2">
+                                                    <button onClick={() => setQuickMode("single")} className={`flex-1 text-[10px] px-2 py-1.5 rounded border ${quickMode === "single" ? 'border-emerald-500 text-emerald-300 bg-emerald-500/10' : 'border-zinc-700 text-zinc-500'}`}>단일</button>
+                                                    <button onClick={() => setQuickMode("split")} className={`flex-1 text-[10px] px-2 py-1.5 rounded border ${quickMode === "split" ? 'border-blue-500 text-blue-300 bg-blue-500/10' : 'border-zinc-700 text-zinc-500'}`}>쪼개기</button>
+                                                </div>
+                                            </div>
+                                            <input
+                                                value={quickContent}
+                                                onChange={(e) => setQuickContent(e.target.value)}
+                                                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs mb-2"
+                                                placeholder="빠르게 추가할 계획 내용을 입력하세요"
+                                            />
+                                            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-2">
+                                                <input type="date" value={quickDate} onChange={(e) => setQuickDate(e.target.value)} className="bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs" />
+                                                <input type="date" value={quickDueDate} onChange={(e) => setQuickDueDate(e.target.value)} className="bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs" />
+                                                <select value={quickMilestone} onChange={(e) => setQuickMilestone(e.target.value)} className="bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs">
+                                                    <option value="P1">P1</option><option value="P2">P2</option><option value="P3">P3</option><option value="P4">P4</option>
+                                                </select>
+                                                <input value={quickExpected} onChange={(e) => setQuickExpected(e.target.value)} className="bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs" placeholder="예상시간" />
+                                            </div>
+                                            <button
+                                                onClick={handleQuickAdd}
+                                                disabled={quickSaving}
+                                                className={`w-full text-[11px] font-bold py-2 rounded-lg border ${quickSaving ? 'border-zinc-700 text-zinc-500 bg-zinc-900' : 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10'}`}
+                                            >
+                                                {quickSaving ? "추가 중..." : "빠른 추가 실행"}
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                {projects.map((proj, idx) => {
+                                    const tasks = proj.allTasks || [];
+                                    const projectKey = getProjectKey(proj.name);
+                                    const action = projectActions[projectKey];
+                                    const form = projectForms[projectKey] || {};
+                                    const chartMode = getChartMode(proj);
+                                    const milestoneHeaders = ["P1", "P2", "P3", "P4"];
+                                    const datedTasks = tasks
+                                        .map((task, i) => ({ task, i, date: toDateOnly(task["날짜"] || task["마감일"]) }))
+                                        .filter(item => item.date);
+                                    const today = toDateOnly(new Date());
+                                    const startDate = datedTasks.length > 0
+                                        ? new Date(Math.min(...datedTasks.map(item => item.date.getTime())))
+                                        : today;
+                                    const endDate = datedTasks.length > 0
+                                        ? new Date(Math.max(...datedTasks.map(item => item.date.getTime())))
+                                        : startDate;
+                                    const dayMs = 1000 * 60 * 60 * 24;
+                                    const rangeDays = Math.max(1, Math.floor((endDate - startDate) / dayMs) + 1);
+                                    const headers = Array.from({ length: rangeDays }, (_, dayIdx) => {
+                                        const d = new Date(startDate);
+                                        d.setDate(startDate.getDate() + dayIdx);
+                                        return d;
+                                    });
+                                    const todayDate = toDateOnly(new Date());
+                                    const todayOffset = Math.floor((todayDate - startDate) / dayMs);
+                                    const todayInRange = todayOffset >= 0 && todayOffset < rangeDays;
+                                    const todayLeft = `${((todayOffset + 0.5) / rangeDays) * 100}%`;
+                                    const totalCols = chartMode === "date" ? rangeDays : 4;
+                                    const isMilestoneMode = chartMode === "milestone";
+                                    const selectedTaskId =
+                                        selectedTaskByProject[projectKey] ||
+                                        tasks.find(t => t.isDelayed)?.["ID"] ||
+                                        tasks[0]?.["ID"] ||
+                                        "";
+                                    const selectedTask = tasks.find((t, i) => ((t["ID"] || `${proj.name}-${i}`) === selectedTaskId)) || null;
+
+                                    return (
+                                        <div
+                                            key={idx}
+                                            ref={(el) => { projectCardRefs.current[proj.name] = el; }}
+                                            className={`glass-panel p-6 transition-all ${highlightedProject === proj.name ? 'ring-2 ring-yellow-400/80 shadow-[0_0_0_1px_rgba(250,204,21,0.3)]' : ''}`}
+                                        >
+                                            <div className="flex items-center justify-between mb-4">
+                                                <h2 className="text-lg font-black text-white">{proj.name}</h2>
+                                                <div className="flex items-center gap-2">
+                                                    <div className="text-xs text-zinc-400 font-mono">
+                                                        {getFormatDate(startDate)} - {getFormatDate(endDate)}
+                                                    </div>
+                                                    <div className="flex items-center gap-1 mr-1">
+                                                        <button
+                                                            onClick={() => setChartMode(proj.name, "date")}
+                                                            className={`text-[10px] px-2 py-1 rounded border ${chartMode === "date" ? 'border-yellow-500/50 text-yellow-300 bg-yellow-500/10' : 'border-zinc-700 text-zinc-500'}`}
+                                                        >
+                                                            날짜
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setChartMode(proj.name, "milestone")}
+                                                            className={`text-[10px] px-2 py-1 rounded border ${chartMode === "milestone" ? 'border-blue-500/50 text-blue-300 bg-blue-500/10' : 'border-zinc-700 text-zinc-500'}`}
+                                                        >
+                                                            마일스톤
+                                                        </button>
+                                                    </div>
+                                                    <button onClick={() => openProjectAction(proj, "add")} className="text-[10px] px-2 py-1 rounded border border-emerald-600/40 text-emerald-300 bg-emerald-600/10">추가</button>
+                                                    <button onClick={() => openProjectAction(proj, "edit")} className="text-[10px] px-2 py-1 rounded border border-blue-600/40 text-blue-300 bg-blue-600/10">수정</button>
+                                                    <button onClick={() => openProjectAction(proj, "delete")} className="text-[10px] px-2 py-1 rounded border border-rose-600/40 text-rose-300 bg-rose-600/10">삭제</button>
+                                                </div>
+                                            </div>
+
+                                            {action && (
+                                                <div className="mb-4 p-3 rounded-xl border border-zinc-800 bg-black/30 space-y-3">
+                                                    <div className="flex items-center justify-between">
+                                                        <p className="text-[11px] font-bold text-zinc-300">
+                                                            {action === "add" ? "계획 추가" : action === "edit" ? "계획 수정" : "계획 삭제"}
+                                                        </p>
+                                                        <button onClick={() => closeProjectAction(proj.name)} className="text-[10px] px-2 py-1 rounded border border-zinc-700 text-zinc-400">닫기</button>
+                                                    </div>
+
+                                                    {(action === "edit" || action === "delete") && (
+                                                        <div>
+                                                            <label className="block text-[10px] text-zinc-500 mb-1">대상 계획</label>
+                                                            <select
+                                                                value={form.targetTaskId || ""}
+                                                                onChange={(e) => applySelectedTaskToForm(proj, e.target.value)}
+                                                                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs"
+                                                            >
+                                                                <option value="">선택하세요</option>
+                                                                {tasks.map((task) => (
+                                                                    <option key={task["ID"]} value={task["ID"]}>
+                                                                        {getFormatDate(task["날짜"] || task["마감일"])} | {task["내용"]}
+                                                                    </option>
+                                                                ))}
+                                                            </select>
+                                                        </div>
+                                                    )}
+
+                                                    {action !== "delete" && (
+                                                        <>
+                                                            <div className="flex items-center gap-2">
+                                                                <button onClick={() => updateProjectForm(proj.name, { mode: "single" })} className={`text-[10px] px-2 py-1 rounded border ${form.mode !== "split" ? 'border-emerald-500 text-emerald-300 bg-emerald-500/10' : 'border-zinc-700 text-zinc-500'}`}>단일</button>
+                                                                <button onClick={() => updateProjectForm(proj.name, { mode: "split" })} className={`text-[10px] px-2 py-1 rounded border ${form.mode === "split" ? 'border-blue-500 text-blue-300 bg-blue-500/10' : 'border-zinc-700 text-zinc-500'}`}>쪼개기</button>
+                                                            </div>
+                                                            <input
+                                                                value={form.content || ""}
+                                                                onChange={(e) => updateProjectForm(proj.name, { content: e.target.value })}
+                                                                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs"
+                                                                placeholder="계획 내용을 입력하세요"
+                                                            />
+                                                            <div className="grid grid-cols-2 gap-2">
+                                                                <input type="date" value={form.date || ""} onChange={(e) => updateProjectForm(proj.name, { date: e.target.value })} className="bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs" />
+                                                                <input type="date" value={form.dueDate || ""} onChange={(e) => updateProjectForm(proj.name, { dueDate: e.target.value })} className="bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs" />
+                                                            </div>
+                                                            <div className="grid grid-cols-2 gap-2">
+                                                                <select value={form.milestone || "P1"} onChange={(e) => updateProjectForm(proj.name, { milestone: e.target.value })} className="bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs">
+                                                                    <option value="P1">P1</option>
+                                                                    <option value="P2">P2</option>
+                                                                    <option value="P3">P3</option>
+                                                                    <option value="P4">P4</option>
+                                                                </select>
+                                                                <input value={form.expected || ""} onChange={(e) => updateProjectForm(proj.name, { expected: e.target.value })} className="bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs" placeholder="예상시간 (예: 20분)" />
+                                                            </div>
+                                                        </>
+                                                    )}
+
+                                                    <div className="flex justify-end">
+                                                        <button
+                                                            onClick={() => submitProjectAction(proj)}
+                                                            className={`text-[11px] font-bold px-3 py-1.5 rounded-lg border ${action === 'delete' ? 'border-rose-500/40 text-rose-300 bg-rose-500/10' : 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10'}`}
+                                                        >
+                                                            {action === "add" ? "추가 실행" : action === "edit" ? "수정 실행" : "삭제 실행"}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            <div className="overflow-x-auto">
+                                                <div className="min-w-[760px] relative">
+                                                    {chartMode === "date" && todayInRange && (
+                                                        <div
+                                                            className="absolute top-0 bottom-0 border-l border-dashed border-yellow-400/90 z-20 pointer-events-none"
+                                                            style={{ left: `calc(220px + ${todayLeft})` }}
+                                                        >
+                                                            <div className="absolute -top-3 -translate-x-1/2 text-[9px] font-black bg-yellow-400 text-black px-1.5 py-0.5 rounded-full">TODAY</div>
+                                                        </div>
+                                                    )}
+
+                                                    {chartMode === "date" ? (
+                                                        <>
+                                                            <div className="grid mb-1 text-[9px] text-zinc-600" style={{ gridTemplateColumns: `220px repeat(${totalCols}, minmax(0,1fr))` }}>
+                                                                <div className="font-bold uppercase tracking-widest">Day</div>
+                                                                {headers.map((_, i) => (
+                                                                    <div key={i} className="text-center font-mono">D{i + 1}</div>
+                                                                ))}
+                                                            </div>
+                                                            <div className="grid mb-2 text-[10px] text-zinc-500" style={{ gridTemplateColumns: `220px repeat(${totalCols}, minmax(0,1fr))` }}>
+                                                                <div className="font-bold uppercase tracking-widest">Plan</div>
+                                                                {headers.map((date, i) => (
+                                                                    <div key={i} className="text-center font-mono">{getFormatDate(date)}</div>
+                                                                ))}
+                                                            </div>
+                                                        </>
+                                                    ) : (
+                                                        <div className="mb-2 text-[10px] text-zinc-500 bg-zinc-900/50 border border-zinc-800 rounded-lg px-3 py-2">
+                                                            카드 내부는 마일스톤 라벨을 각 행 좌측에 표시합니다.
+                                                        </div>
+                                                    )}
+
+                                                    <div className="space-y-2">
+                                                        {tasks.map((task, i) => {
+                                                            const taskId = task["ID"] || `${proj.name}-${i}`;
+                                                            const taskDate = toDateOnly(task["날짜"] || task["마감일"]) || startDate;
+                                                            const milestoneIndex = Math.max(milestoneHeaders.indexOf(task["milestone"]), 0);
+                                                            const offset = chartMode === "date"
+                                                                ? Math.min(Math.max(Math.floor((taskDate - startDate) / dayMs), 0), rangeDays - 1)
+                                                                : milestoneIndex;
+                                                            const left = `${(offset / totalCols) * 100}%`;
+                                                            const width = `${Math.max(100 / totalCols, 6)}%`;
+                                                            const isSelected = selectedTaskId === taskId;
+                                                            return (
+                                                                <div
+                                                                    key={taskId}
+                                                                    onClick={() => setSelectedTaskByProject(prev => ({ ...prev, [projectKey]: taskId }))}
+                                                                    className={`bg-zinc-950/50 border rounded-xl p-3 cursor-pointer transition-colors ${isSelected ? 'border-yellow-400/60 bg-yellow-400/5' : 'border-zinc-800 hover:bg-zinc-900/60'}`}
+                                                                >
+                                                                    <div className="flex items-center gap-2 mb-2">
+                                                                        {isMilestoneMode && (
+                                                                            <span className="text-[10px] font-black px-2 py-1 rounded bg-blue-500/10 text-blue-300 border border-blue-500/30 min-w-[34px] text-center">
+                                                                                {task["milestone"] || "P1"}
+                                                                            </span>
+                                                                        )}
+                                                                        <div className={`text-xs flex-1 truncate ${task.isDone ? 'line-through text-zinc-500' : task.isDelayed ? 'text-amber-200' : 'text-zinc-200'}`}>
+                                                                            {task.isDelayed ? '📌 ' : task.isDone ? '✅ ' : '🏃 '}
+                                                                            {task["내용"] || "내용 없음"}
+                                                                        </div>
+                                                                        <span className="text-[10px] font-mono text-zinc-500">{getFormatDate(task["날짜"] || task["마감일"])}</span>
+                                                                        <div className="flex items-center gap-1">
+                                                                            <button
+                                                                                onClick={(e) => { e.stopPropagation(); handlePlayTask(task); }}
+                                                                                disabled={playingTaskId === task["ID"]}
+                                                                                className="px-2 py-1 rounded bg-emerald-600/20 text-emerald-300 border border-emerald-600/30 text-[11px] font-bold disabled:opacity-50"
+                                                                            >
+                                                                                {getTaskRunState(task) === "running" ? "완료" : getTaskRunState(task) === "done" ? "다시시작" : "재생"}
+                                                                            </button>
+                                                                            <button
+                                                                                onClick={(e) => { e.stopPropagation(); handleSplitTask(task); }}
+                                                                                disabled={splittingTaskId === task["ID"]}
+                                                                                className="px-2 py-1 rounded bg-blue-600/20 text-blue-300 border border-blue-600/30 text-[11px] font-bold disabled:opacity-50"
+                                                                            >
+                                                                                쪼개기
+                                                                            </button>
+                                                                            <button
+                                                                                onClick={(e) => { e.stopPropagation(); handleDeleteTask(task); }}
+                                                                                className="px-2 py-1 rounded bg-rose-600/20 text-rose-300 border border-rose-600/30 text-[11px] font-bold"
+                                                                            >
+                                                                                지우기
+                                                                            </button>
+                                                                        </div>
+                                                                    </div>
+
+                                                                    <div className="relative h-7 bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+                                                                        <div className="absolute inset-0 flex">
+                                                                            {Array.from({ length: totalCols }).map((_, hIdx) => (
+                                                                                <div key={hIdx} className="flex-1 border-r border-zinc-800/60"></div>
+                                                                            ))}
+                                                                        </div>
+                                                                        <div
+                                                                            className={`absolute top-1 bottom-1 rounded-md ${task.isDone ? 'bg-emerald-500/70' : 'bg-blue-500/80'}`}
+                                                                            style={{ left, width }}
+                                                                        ></div>
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div className="mt-4 p-3 bg-black/40 border border-zinc-800 rounded-lg text-xs text-zinc-300 grid grid-cols-2 gap-2">
+                                                {!selectedTask ? (
+                                                    <div className="col-span-2 text-zinc-500">선택된 계획이 없습니다.</div>
+                                                ) : (
+                                                    <>
+                                                        <div>날짜: <span className="font-mono text-zinc-400">{getFormatDate(selectedTask["날짜"] || selectedTask["마감일"])}</span></div>
+                                                        <div>마일스톤: <span className="font-mono text-zinc-400">{selectedTask["milestone"] || "-"}</span></div>
+                                                        <div>예상시간: <span className="font-mono text-zinc-400">{selectedTask["예상시간"] || "-"}</span></div>
+                                                        <div>진행상태: <span className="font-mono text-zinc-400">{getTaskRunState(selectedTask) === "running" ? "실행중" : getTaskRunState(selectedTask) === "done" ? "완료" : "대기"}</span></div>
+                                                        <div>일정상태: <span className={`font-mono ${selectedTask.isDelayed ? 'text-amber-400' : 'text-zinc-400'}`}>{selectedTask.isDelayed ? `${selectedTask.delayDays}일 됐어요, 지금 시작!` : "정상"}</span></div>
+                                                        <div>
+                                                            {(() => {
+                                                                const actualMins = calcActualMinutes(selectedTask["시작시간"], selectedTask["종료시간"]);
+                                                                const expectedMins = selectedTask["예상시간"] ? parseInt(String(selectedTask["예상시간"]).replace(/[^0-9]/g, "")) : null;
+                                                                if (actualMins === null) return <span className="font-mono text-zinc-500">실제시간 미기록</span>;
+                                                                const isOverTime = expectedMins && actualMins > expectedMins;
+                                                                return <span className={`font-mono ${isOverTime ? 'text-red-400' : 'text-emerald-400'}`}>실제 {actualMins}분</span>;
+                                                            })()}
+                                                        </div>
+                                                        <div className="col-span-2">상세내용: <span className="text-zinc-200">{selectedTask["내용"] || "-"}</span></div>
+                                                        <div className="col-span-2 mt-1">
+                                                            <div className="text-[10px] text-zinc-500 mb-1">실행 로그</div>
+                                                            {(() => {
+                                                                const logs = getTaskRunLogs(selectedTask["ID"]);
+                                                                const sessions = getTaskRunSessions(selectedTask["ID"]);
+                                                                if (logs.length === 0) return <div className="text-[10px] text-zinc-600">기록 없음</div>;
+                                                                return (
+                                                                    <div className="space-y-1">
+                                                                        {logs.slice().reverse().map((log, idx) => (
+                                                                            <div key={idx} className="flex items-center justify-between text-[10px] border-b border-zinc-800/60 pb-1 last:border-0">
+                                                                                <span className={`${log.action === 'complete' ? 'text-emerald-300' : 'text-blue-300'}`}>{log.action === 'complete' ? '완료' : '시작'}</span>
+                                                                                <span className="font-mono text-zinc-400">{log.time || "-"}</span>
+                                                                                <span className="font-mono text-zinc-500">{log.at ? getFormatDate(log.at) : "-"}</span>
+                                                                            </div>
+                                                                        ))}
+                                                                        {sessions.length > 0 && (
+                                                                            <div className="mt-2 pt-2 border-t border-zinc-800/60 space-y-1">
+                                                                                {sessions.slice().reverse().map((s, sIdx) => (
+                                                                                    <div key={sIdx} className="text-[10px] flex items-center justify-between">
+                                                                                        <span className="text-zinc-500">세션 {sessions.length - sIdx}</span>
+                                                                                        <span className="font-mono text-zinc-400">{s.start} - {s.end}</span>
+                                                                                        <span className={`${s.durationMins !== null && s.durationMins > 0 ? 'text-emerald-300' : 'text-zinc-500'} font-mono`}>{s.durationMins !== null ? `${s.durationMins}분` : "-"}</span>
+                                                                                    </div>
+                                                                                ))}
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                );
+                                                            })()}
+                                                        </div>
+                                                    </>
+                                                )}
+                                            </div>
+
+                                            <div className="mt-5 bg-[#050608] border border-emerald-900/50 rounded-xl p-4 flex items-center gap-3">
+                                                <span className="text-lg bg-zinc-900 px-2 py-1 rounded-lg border border-zinc-800">🚀</span>
+                                                <div>
+                                                    <p className="text-emerald-400 text-[10px] font-bold tracking-widest uppercase">코칭</p>
+                                                    <p className="text-xs text-zinc-300">{getCoachingMessage(proj.currentDay)}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ) : (
+                            <div className="space-y-5 expand-anim">
+                                <div className="glass-panel p-6">
+                                    <h2 className="text-lg font-black text-white mb-1">V2 하이브리드(조합안) 프리뷰</h2>
+                                    <p className="text-xs text-zinc-500">v2.1 즉시 실행 + v2.2 핵심 인사이트를 운영 모드로 통합</p>
+                                </div>
+
+                                <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                                    <div className="glass-panel p-4">
+                                        <p className="text-[11px] text-zinc-500 mb-1">프로젝트 신호등</p>
+                                        <p className="text-lg font-black">정상 {signal.ok} / 주의 {signal.warn} / 미뤄짐 {signal.danger}</p>
+                                    </div>
+                                    <div className="glass-panel p-4">
+                                        <p className="text-[11px] text-zinc-500 mb-1">데일리 가드</p>
+                                        <p className="text-lg font-black">{Math.floor((todayActualMins || todayExpectedMins) / 60)}h {(todayActualMins || todayExpectedMins) % 60}m / 6h</p>
+                                        <div className="mt-2 h-2 rounded bg-zinc-900 border border-zinc-800 overflow-hidden">
+                                            <div className="h-full bg-emerald-500" style={{ width: `${Math.min(Math.round(((todayActualMins || todayExpectedMins) / dailyCapacityMins) * 100), 140)}%` }}></div>
+                                        </div>
+                                    </div>
+                                    <div className="glass-panel p-4">
+                                        <p className="text-[11px] text-zinc-500 mb-1">예상시간 보정</p>
+                                        <p className="text-lg font-black">중앙값 {medianDeltaMins >= 0 ? "+" : ""}{medianDeltaMins}분 제안</p>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                                    <div className="glass-panel p-4">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <p className="text-sm font-black">운영 패널 (v2.1 중심)</p>
+                                            <span className="text-[10px] px-2 py-1 rounded border border-zinc-700 text-zinc-400">실행용</span>
+                                        </div>
+                                        <div className="space-y-2 text-sm">
+                                            {majorMinorStats.slice(0, 5).map((row) => (
+                                                <div key={row.name} className="flex items-center justify-between border-b border-zinc-800 pb-2 last:border-0">
+                                                    <span className="truncate">{row.name}</span>
+                                                    <span className={`text-[11px] px-2 py-1 rounded ${row.delayed > 0 ? 'bg-amber-500/10 text-amber-300' : row.percent < 60 ? 'bg-yellow-500/10 text-yellow-300' : 'bg-emerald-500/10 text-emerald-300'}`}>
+                                                        {row.delayed > 0 ? "미뤄짐" : row.percent < 60 ? "주의" : "정상"}
+                                                    </span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <div className="mt-3 text-xs text-zinc-400">데일리 시간 사용 {Math.floor(todayExpectedMins / 60)}h {todayExpectedMins % 60}m / 6h</div>
+                                    </div>
+
+                                    <div className="glass-panel p-4">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <p className="text-sm font-black">데드라인 + 의존성 경고</p>
+                                            <span className="text-[10px] px-2 py-1 rounded border border-zinc-700 text-zinc-400">v2.2 일부 선반영</span>
+                                        </div>
+                                        <div className="space-y-2">
+                                            {upcomingDeadlines.length === 0 && <div className="text-xs text-zinc-500">7일 내 임박 작업 없음</div>}
+                                            {upcomingDeadlines.map((task) => {
+                                                const due = toDateOnly(task["마감일"] || task["날짜"]);
+                                                const dday = due && todayDateOnly ? Math.floor((due - todayDateOnly) / majorDayMs) : null;
+                                                return (
+                                                    <div key={task["ID"]} className="flex items-center justify-between border-b border-zinc-800 pb-2 last:border-0">
+                                                        <span className="text-xs truncate">{task["내용"]}</span>
+                                                        <span className="text-xs text-zinc-400">{dday !== null ? `D-${dday}` : "-"}</span>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                        <div className="mt-3 text-xs">
+                                            <span className="text-zinc-500 mr-2">의존성 상태</span>
+                                            <span className={`px-2 py-1 rounded ${depWarningCount > 0 ? 'bg-red-500/10 text-red-300' : 'bg-emerald-500/10 text-emerald-300'}`}>
+                                                {depWarningCount > 0 ? `선행 미완료 경고 ${depWarningCount}건` : "정상"}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                                    <div className="glass-panel p-4">
+                                        <div className="flex items-center justify-between mb-3">
+                                            <p className="text-sm font-black">통합 타임라인 (미니맵 제외)</p>
+                                            <span className="text-[10px] px-2 py-1 rounded border border-zinc-700 text-zinc-400">v2.2</span>
+                                        </div>
+                                        <div className="space-y-3">
+                                            {timelineRows.map((row) => (
+                                                <div key={row.name} className="grid grid-cols-[120px_1fr_92px] gap-2 items-center text-xs">
+                                                    <span className="truncate text-zinc-300">{row.name}</span>
+                                                    <div className="relative h-4 rounded bg-zinc-900 border border-zinc-800 overflow-hidden">
+                                                        <div className="absolute top-[2px] bottom-[2px] rounded bg-gradient-to-r from-blue-500 to-emerald-500" style={{ left: row.left, width: row.width }}></div>
+                                                        {majorTodayInRange && (
+                                                            <div className="absolute top-0 bottom-0 border-l border-dashed border-yellow-300" style={{ left: majorTodayLeft }}>
+                                                                <span className="absolute -top-4 -translate-x-1/2 text-[9px] font-black bg-yellow-300 text-black px-1 py-[1px] rounded">TODAY</span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    <span className="font-mono text-zinc-500 text-right">{row.period}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="glass-panel p-4">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <p className="text-sm font-black">기간 리포트 + 실행로그 DB</p>
+                                            <span className="text-[10px] px-2 py-1 rounded border border-zinc-700 text-zinc-400">v2.1</span>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 text-xs">
+                                            <div className="rounded border border-zinc-800 p-3 bg-black/20">
+                                                <div className="text-zinc-500">최근 7일 완료율</div>
+                                                <div className="text-lg font-black mt-1">{recentRate}%</div>
+                                            </div>
+                                            <div className="rounded border border-zinc-800 p-3 bg-black/20">
+                                                <div className="text-zinc-500">미뤄진 건</div>
+                                                <div className="text-lg font-black mt-1">{recentDelayed}건</div>
+                                            </div>
+                                            <div className="rounded border border-zinc-800 p-3 bg-black/20">
+                                                <div className="text-zinc-500">예상 vs 실제</div>
+                                                <div className="text-lg font-black mt-1">{medianDeltaMins >= 0 ? "+" : ""}{medianDeltaMins}분</div>
+                                            </div>
+                                            <div className="rounded border border-zinc-800 p-3 bg-black/20">
+                                                <div className="text-zinc-500">실행 로그(누적)</div>
+                                                <div className="text-lg font-black mt-1">{runLogsCount}건</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="glass-panel p-4">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <p className="text-sm font-black">오늘 카테고리별 해야할 일</p>
+                                        <span className="text-[10px] px-2 py-1 rounded border border-zinc-700 text-zinc-400">실행 후 다음 작업 표시</span>
+                                    </div>
+                                    <div className="space-y-2">
+                                        {todayTasksByProject.length === 0 && (
+                                            <div className="text-xs text-zinc-500">오늘 일정이 없고, 다음 작업 후보도 없습니다.</div>
+                                        )}
+                                        {todayTasksByProject.map((row) => (
+                                            <details key={row.name} open className="rounded-lg border border-zinc-800 bg-black/20 p-2">
+                                                <summary className="cursor-pointer flex items-center justify-between text-xs font-bold">
+                                                    <span>{row.name}</span>
+                                                    <span className={`px-2 py-0.5 rounded text-[10px] ${row.delayed ? 'bg-amber-500/10 text-amber-300' : 'bg-emerald-500/10 text-emerald-300'}`}>
+                                                        {row.delayed ? "미뤄짐" : "진행 중"}
+                                                    </span>
+                                                </summary>
+                                                <div className="mt-2 space-y-1 text-xs">
+                                                    {row.todayList.filter((t) => t.isDone).map((t) => (
+                                                        <div key={`done-${t["ID"]}`} className="grid grid-cols-[20px_1fr_40px] gap-2 items-center opacity-60 line-through">
+                                                            <span>✅</span><span>{t["내용"]}</span><span className="text-right">완료</span>
+                                                        </div>
+                                                    ))}
+                                                    {row.nextTask && (
+                                                        <div className="grid grid-cols-[20px_1fr_40px] gap-2 items-center border border-blue-500/40 rounded px-2 py-1 bg-blue-500/10">
+                                                            <span>▶</span><span>{row.nextTask["내용"]}</span><span className="text-right">다음</span>
+                                                        </div>
+                                                    )}
+                                                    {row.waiting.map((t) => (
+                                                        <div key={`wait-${t["ID"]}`} className="grid grid-cols-[20px_1fr_40px] gap-2 items-center">
+                                                            <span>○</span><span>{t["내용"]}</span><span className="text-right text-zinc-500">대기</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </details>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+
+                    {/* Floating Action Button */}
+                    <button
+                        onClick={() => setIsModalOpen(true)}
+                        className="fixed bottom-10 right-10 fab-gradient px-8 py-4 rounded-full font-black text-white shadow-2xl hover:scale-105 transition-transform flex items-center gap-3 z-40"
+                    >
+                        <span className="text-xl">✨</span> AI로 새 프로젝트 시작
+                    </button>
+
+                    {/* AI Modal */}
+                    {isModalOpen && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 modal-overlay">
+                            <div className="glass-panel w-full max-w-lg p-8 shadow-[0_0_50px_rgba(0,0,0,0.5)] relative">
+                                <button onClick={() => setIsModalOpen(false)} className="absolute top-6 right-6 text-zinc-500 hover:text-white text-xl">✕</button>
+
+                                <div className="mb-8">
+                                    <h2 className="text-2xl font-black text-white mb-2">AI Project Architect</h2>
+                                    <p className="text-zinc-500 text-sm">목표를 입력하면 AI가 10일간의 실행 전략을 설계합니다.</p>
+                                </div>
+
+                                <div className="space-y-6">
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">Gemini API Key</label>
+                                        <input
+                                            type="password"
+                                            value={apiKey}
+                                            onChange={(e) => setApiKey(e.target.value)}
+                                            className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                                            placeholder="Google AI Studio에서 발급받은 키를 입력하세요"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">Your Goal</label>
+                                        <textarea
+                                            value={aiGoal}
+                                            onChange={(e) => setAiGoal(e.target.value)}
+                                            className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-sm h-32 focus:ring-2 focus:ring-emerald-500 outline-none transition-all resize-none"
+                                            placeholder="예: 2주 안에 리액트 포트폴리오 완성하기, 토익 800점 달성하기 등"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">대카테고리</label>
+                                        <select
+                                            value={majorCategorySelect}
+                                            onChange={(e) => {
+                                                setMajorCategorySelect(e.target.value);
+                                                setMinorCategorySelect("");
+                                                setMinorCategoryCustom("");
+                                            }}
+                                            className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                                        >
+                                            <option value="">선택하세요</option>
+                                            {majorCategoryOptions.map((cat) => (
+                                                <option key={cat} value={cat}>{cat}</option>
+                                            ))}
+                                            <option value={CUSTOM_OPTION}>직접 입력</option>
+                                        </select>
+                                        {majorCategorySelect === CUSTOM_OPTION && (
+                                            <input
+                                                type="text"
+                                                value={majorCategoryCustom}
+                                                onChange={(e) => setMajorCategoryCustom(e.target.value)}
+                                                className="mt-2 w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                                                placeholder="대카테고리를 직접 입력하세요"
+                                            />
+                                        )}
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">중카테고리</label>
+                                        <select
+                                            value={minorCategorySelect}
+                                            onChange={(e) => setMinorCategorySelect(e.target.value)}
+                                            className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                                        >
+                                            <option value="">선택하세요</option>
+                                            {minorCategoryOptions.map((cat) => (
+                                                <option key={cat} value={cat}>{cat}</option>
+                                            ))}
+                                            <option value={CUSTOM_OPTION}>직접 입력</option>
+                                        </select>
+                                        {minorCategorySelect === CUSTOM_OPTION && (
+                                            <input
+                                                type="text"
+                                                value={minorCategoryCustom}
+                                                onChange={(e) => setMinorCategoryCustom(e.target.value)}
+                                                className="mt-2 w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                                                placeholder="중카테고리를 직접 입력하세요"
+                                            />
+                                        )}
+                                    </div>
+
+                                    <button
+                                        onClick={handleAISplit}
+                                        disabled={isGenerating}
+                                        className={`w-full py-5 rounded-2xl font-black text-sm transition-all ${isGenerating ? 'bg-zinc-800 text-zinc-500' : 'fab-gradient text-white hover:opacity-90'}`}
+                                    >
+                                        {isGenerating ? (
+                                            <span className="flex items-center justify-center gap-3">
+                                                <span className="w-4 h-4 border-2 border-zinc-500 border-t-white rounded-full animate-spin"></span>
+                                                AI가 전략을 짜는 중...
+                                            </span>
+                                        ) : "전략 설계 시작하기"}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
